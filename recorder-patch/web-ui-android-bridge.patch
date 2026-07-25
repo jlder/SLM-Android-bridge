@@ -1,0 +1,77 @@
+diff --git a/src/tasks/web_ui/11_script_files_download.inc b/src/tasks/web_ui/11_script_files_download.inc
+--- a/src/tasks/web_ui/11_script_files_download.inc
++++ b/src/tasks/web_ui/11_script_files_download.inc
+@@
+         function downloadFile(filename) {
++            // The recorder-hosted app retains workflow, UI, versioning, and analysis.
++            if (window.SLMAndroid &&
++                typeof window.SLMAndroid.downloadRecorderFile === 'function') {
++                let capabilities = null;
++                try {
++                    capabilities = JSON.parse(window.SLMAndroid.getCapabilities());
++                } catch (err) {
++                    console.warn('SLM Android bridge capability check failed', err);
++                }
++                if (capabilities && capabilities.bridgeVersion >= 1) {
++                    window.SLMAndroid.downloadRecorderFile(JSON.stringify({
++                        filename: filename,
++                        analyze: true,
++                        upload: true
++                    }));
++                    showAndroidTransferWindow(filename);
++                    return;
++                }
++            }
++
+             const status = document.getElementById('flightAnalysisStatus');
+@@
+         }
++
++        function showAndroidTransferWindow(filename) {
++            const panel = document.getElementById('flightAnalysisWindow');
++            const table = document.getElementById('flightAnalysisTable');
++            const status = document.getElementById('flightAnalysisStatus');
++            panel.classList.remove('hidden');
++            table.innerHTML = '';
++            status.textContent = 'Preparing transfer for ' + filename + '...';
++            setProgress('downloadProgressBar', 'downloadProgressText', 0, 'Download: starting...');
++        }
++
++        window.addEventListener('slm-transfer-event', function(event) {
++            const detail = event && event.detail ? event.detail : {};
++            const status = document.getElementById('flightAnalysisStatus');
++            const percent = Number(detail.percent) || 0;
++            if (detail.state === 'downloading') {
++                setProgress('downloadProgressBar', 'downloadProgressText', percent,
++                    'Download: ' + percent + '%');
++            } else if (detail.state === 'download-complete') {
++                setProgress('downloadProgressBar', 'downloadProgressText', 100, 'Download: complete');
++                status.textContent = 'Processing ' + detail.filename + '...';
++                fetch(detail.localUrl, { cache: 'no-store' })
++                    .then(function(response) {
++                        if (!response.ok) throw new Error('local file unavailable');
++                        return response.arrayBuffer();
++                    })
++                    .then(function(buffer) { return analyzeRecorderFileAsync(buffer); })
++                    .then(function(analysis) {
++                        showFlightAnalysis(detail.filename, analysis);
++                        writeFlightAnalysisLog(detail.filename, analysis);
++                    })
++                    .catch(function(err) {
++                        console.error(err);
++                        status.textContent = 'Local analysis failed; Drive upload may continue.';
++                    });
++            } else if (detail.state === 'uploading') {
++                status.textContent = detail.filename + ': uploading to Drive (' + percent + '%)...';
++            } else if (detail.state === 'upload-pending') {
++                status.textContent = 'Saved on phone; Drive upload pending' +
++                    (detail.error ? ': ' + detail.error : '');
++            } else if (detail.state === 'upload-complete') {
++                status.textContent = detail.filename + ': analysis/upload complete.';
++                // Retain the private local copy until analysis and the app's
++                // durable retention policy both confirm that it can be removed.
++            } else if (detail.state === 'failed') {
++                status.textContent = detail.filename + ': transfer failed: ' +
++                    (detail.error || 'unknown error');
++            }
++        });

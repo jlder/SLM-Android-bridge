@@ -1,0 +1,11 @@
+.gradle/
+.idea/
+local.properties
+**/build/
+*.iml
+client_secret*.json
+*.oauth.json
+*.private.json
+slm-drive-config*.json
+.secrets/
+upload-token.txt

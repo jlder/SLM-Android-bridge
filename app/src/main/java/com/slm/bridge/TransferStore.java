@@ -1,0 +1,234 @@
+package com.slm.bridge;
+
+import android.content.Context;
+
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+final class TransferStore {
+    static final class Item {
+        final String id;
+        final String filename;
+        final File file;
+        final String registration;
+        final String driveSubfolder;
+        final boolean uploadRequested;
+        boolean downloadComplete;
+        boolean uploaded;
+        final boolean archiveRequested;
+        boolean analysisComplete;
+        boolean archived;
+        String sha256;
+        String uploadSession;
+        long uploadedBytes;
+        final long createdAt;
+
+        Item(String id, String filename, File file, String registration, String driveSubfolder,
+             boolean uploadRequested,
+             boolean downloadComplete, boolean uploaded, boolean archiveRequested,
+             boolean analysisComplete, boolean archived, String sha256, String uploadSession,
+             long uploadedBytes, long createdAt) {
+            this.id = id;
+            this.filename = filename;
+            this.file = file;
+            this.registration = registration;
+            this.driveSubfolder = normalizeDriveSubfolder(driveSubfolder);
+            this.uploadRequested = uploadRequested;
+            this.downloadComplete = downloadComplete;
+            this.uploaded = uploaded;
+            this.archiveRequested = archiveRequested;
+            this.analysisComplete = analysisComplete;
+            this.archived = archived;
+            this.sha256 = sha256;
+            this.uploadSession = uploadSession;
+            this.uploadedBytes = uploadedBytes;
+            this.createdAt = createdAt;
+        }
+
+        String localUrl() { return "https://slm-app.local/transfers/" + id + "/content"; }
+    }
+
+    private final File directory;
+    private final Map<String, Item> items = new LinkedHashMap<>();
+
+    TransferStore(Context context) {
+        directory = new File(context.getFilesDir(), "transfers");
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw new IllegalStateException("Cannot create transfer directory");
+        }
+        loadExisting();
+    }
+
+    synchronized Item create(String filename, String registration, boolean uploadRequested) throws Exception {
+        String id = UUID.randomUUID().toString();
+        Item item = new Item(id, filename, dataFile(id), registration, "",
+                uploadRequested, false, false, uploadRequested, false, false,
+                "", "", 0, System.currentTimeMillis());
+        items.put(id, item);
+        persist(item);
+        return item;
+    }
+
+    synchronized Item createReport(String filename, String registration) throws Exception {
+        String id = UUID.randomUUID().toString();
+        Item item = new Item(id, filename, dataFile(id), registration, "reports",
+                true, false, false, false, true, false,
+                "", "", 0, System.currentTimeMillis());
+        items.put(id, item);
+        persist(item);
+        return item;
+    }
+
+    synchronized void markDownloaded(Item item, String sha256) throws Exception {
+        item.downloadComplete = true;
+        item.sha256 = sha256;
+        persist(item);
+    }
+
+    synchronized void updateSession(Item item, String session, long uploadedBytes) throws Exception {
+        item.uploadSession = session == null ? "" : session;
+        item.uploadedBytes = uploadedBytes;
+        persist(item);
+    }
+
+    synchronized void markUploaded(Item item) throws Exception {
+        item.uploaded = true;
+        item.uploadSession = "";
+        item.uploadedBytes = item.file.length();
+        persist(item);
+    }
+
+    synchronized void markAnalysisComplete(Item item) throws Exception {
+        item.analysisComplete = true;
+        persist(item);
+    }
+
+    synchronized void markArchived(Item item) throws Exception {
+        item.archived = true;
+        persist(item);
+    }
+
+    synchronized Item get(String id) { return items.get(id); }
+
+    synchronized List<Item> pendingUploads() {
+        List<Item> result = new ArrayList<>();
+        for (Item item : items.values()) {
+            if (item.uploadRequested && item.downloadComplete && !item.uploaded && item.file.isFile()) {
+                result.add(item);
+            }
+        }
+        return result;
+    }
+
+    synchronized boolean hasPendingUploads() { return !pendingUploads().isEmpty(); }
+
+    synchronized List<Item> pendingArchives() {
+        List<Item> result = new ArrayList<>();
+        for (Item item : items.values()) {
+            if (item.archiveRequested && item.uploaded && item.analysisComplete
+                    && !item.archived && item.file.isFile()) {
+                result.add(item);
+            }
+        }
+        return result;
+    }
+
+    synchronized void delete(String id) {
+        Item item = items.remove(id);
+        if (item == null) return;
+        if (item.file.exists()) item.file.delete();
+        File metadata = metadataFile(id);
+        if (metadata.exists()) metadata.delete();
+    }
+
+    private void loadExisting() {
+        File[] metadata = directory.listFiles((dir, name) -> name.endsWith(".json"));
+        if (metadata == null) return;
+        for (File file : metadata) {
+            try {
+                JSONObject value = new JSONObject(readText(file));
+                String id = value.getString("id");
+                Item item = new Item(id, value.getString("filename"), dataFile(id),
+                        value.getString("registration"), value.optString("driveSubfolder"),
+                        value.optBoolean("uploadRequested", true),
+                        value.optBoolean("downloadComplete"), value.optBoolean("uploaded"),
+                        value.optBoolean("archiveRequested", false),
+                        value.optBoolean("analysisComplete", false),
+                        value.optBoolean("archived", false),
+                        value.optString("sha256"), value.optString("uploadSession"),
+                        value.optLong("uploadedBytes"), value.optLong("createdAt"));
+                if (item.uploaded && !item.archiveRequested) {
+                    removeFiles(id);
+                } else if (item.downloadComplete && item.file.isFile()) {
+                    items.put(id, item);
+                } else {
+                    removeFiles(id);
+                }
+            } catch (Exception ignored) {
+                String name = file.getName();
+                removeFiles(name.substring(0, name.length() - 5));
+            }
+        }
+    }
+
+    private void persist(Item item) throws Exception {
+        JSONObject value = new JSONObject()
+                .put("version", 3)
+                .put("id", item.id)
+                .put("filename", item.filename)
+                .put("registration", item.registration)
+                .put("driveSubfolder", item.driveSubfolder)
+                .put("uploadRequested", item.uploadRequested)
+                .put("downloadComplete", item.downloadComplete)
+                .put("uploaded", item.uploaded)
+                .put("archiveRequested", item.archiveRequested)
+                .put("analysisComplete", item.analysisComplete)
+                .put("archived", item.archived)
+                .put("sha256", item.sha256)
+                .put("uploadSession", item.uploadSession)
+                .put("uploadedBytes", item.uploadedBytes)
+                .put("createdAt", item.createdAt);
+        File target = metadataFile(item.id);
+        File temporary = new File(directory, item.id + ".json.tmp");
+        try (FileOutputStream out = new FileOutputStream(temporary)) {
+            out.write(value.toString().getBytes(StandardCharsets.UTF_8));
+            out.getFD().sync();
+        }
+        if (target.exists() && !target.delete()) throw new IllegalStateException("Cannot update transfer metadata");
+        if (!temporary.renameTo(target)) throw new IllegalStateException("Cannot save transfer metadata");
+    }
+
+    private File dataFile(String id) { return new File(directory, id + ".data"); }
+    private File metadataFile(String id) { return new File(directory, id + ".json"); }
+
+    private static String normalizeDriveSubfolder(String value) {
+        return "reports".equals(value) ? "reports" : "";
+    }
+
+    private static String readText(File file) throws Exception {
+        try (FileInputStream in = new FileInputStream(file);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096];
+            int count;
+            while ((count = in.read(buffer)) >= 0) out.write(buffer, 0, count);
+            return out.toString(StandardCharsets.UTF_8.name());
+        }
+    }
+
+    private void removeFiles(String id) {
+        File data = dataFile(id);
+        File metadata = metadataFile(id);
+        if (data.exists()) data.delete();
+        if (metadata.exists()) metadata.delete();
+    }
+}

@@ -1,0 +1,5 @@
+test/
+*.log
+.env
+oauth.json
+upload-token.txt
