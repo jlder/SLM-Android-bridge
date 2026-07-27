@@ -5,25 +5,73 @@
     android:background="#FFFFFF"
     android:orientation="vertical">
 
-    <TextView
-        android:id="@+id/bridgeTitle"
+    <LinearLayout
+        android:id="@+id/bridgeHeader"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:autoSizeMaxTextSize="22sp"
-        android:autoSizeMinTextSize="14sp"
-        android:autoSizeStepGranularity="1sp"
-        android:autoSizeTextType="uniform"
-        android:background="#000000"
-        android:ellipsize="end"
-        android:gravity="center"
-        android:maxLines="1"
-        android:minHeight="44dp"
+        android:background="@drawable/bridge_header_background"
+        android:gravity="center_vertical"
+        android:minHeight="78dp"
+        android:orientation="horizontal"
         android:paddingStart="8dp"
+        android:paddingTop="6dp"
         android:paddingEnd="8dp"
-        android:text="SLM BRIDGE - Not Connected"
-        android:textColor="#FFFFFF"
-        android:textSize="20sp"
-        android:textStyle="bold" />
+        android:paddingBottom="6dp">
+
+        <TextView
+            android:id="@+id/recorderStatus"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1.45"
+            android:autoSizeMaxTextSize="19sp"
+            android:autoSizeMinTextSize="11sp"
+            android:autoSizeStepGranularity="1sp"
+            android:autoSizeTextType="uniform"
+            android:gravity="center"
+            android:maxLines="2"
+            android:text="No\nRecorder"
+            android:textColor="#FFC400"
+            android:includeFontPadding="false"
+            android:textAlignment="center"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/bridgeTitle"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1.30"
+            android:autoSizeMaxTextSize="27sp"
+            android:autoSizeMinTextSize="16sp"
+            android:autoSizeStepGranularity="1sp"
+            android:autoSizeTextType="uniform"
+            android:gravity="center"
+            android:maxLines="2"
+            android:textAlignment="center"
+            android:text="SLM\nBRIDGE"
+            android:textColor="#FFFFFF"
+            android:includeFontPadding="false"
+            android:textSize="25sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/serverStatus"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1.45"
+            android:autoSizeMaxTextSize="19sp"
+            android:autoSizeMinTextSize="11sp"
+            android:autoSizeStepGranularity="1sp"
+            android:autoSizeTextType="uniform"
+            android:gravity="center"
+            android:maxLines="2"
+            android:text="Server\nOff-line"
+            android:textColor="#FFC400"
+            android:includeFontPadding="false"
+            android:textAlignment="center"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+    </LinearLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -32,9 +80,9 @@
         android:gravity="center"
         android:orientation="horizontal"
         android:paddingStart="4dp"
-        android:paddingTop="6dp"
+        android:paddingTop="5dp"
         android:paddingEnd="4dp"
-        android:paddingBottom="6dp">
+        android:paddingBottom="3dp">
 
         <Button
             android:id="@+id/connectButton"
@@ -45,53 +93,36 @@
             android:text="CONNECT" />
     </LinearLayout>
 
-    <LinearLayout
+    <TextView
+        android:id="@+id/fileQueueStatus"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:autoSizeMaxTextSize="15sp"
+        android:autoSizeMinTextSize="10sp"
+        android:autoSizeStepGranularity="1sp"
+        android:autoSizeTextType="uniform"
         android:background="#FFFFFF"
-        android:orientation="horizontal"
-        android:paddingStart="6dp"
-        android:paddingEnd="6dp"
-        android:paddingBottom="4dp">
+        android:gravity="center"
+        android:maxLines="1"
+        android:minHeight="22dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:text="File Queue Empty"
+        android:textColor="#000000"
+        android:textSize="14sp"
+        android:textStyle="bold" />
 
-        <TextView
-            android:id="@+id/serverStatus"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:autoSizeMaxTextSize="15sp"
-            android:autoSizeMinTextSize="10sp"
-            android:autoSizeStepGranularity="1sp"
-            android:autoSizeTextType="uniform"
-            android:ellipsize="end"
-            android:gravity="start|center_vertical"
-            android:maxLines="1"
-            android:minHeight="32dp"
-            android:paddingEnd="4dp"
-            android:text="Server Off-line"
-            android:textColor="#FFB000"
-            android:textSize="15sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/fileQueueStatus"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:autoSizeMaxTextSize="15sp"
-            android:autoSizeMinTextSize="10sp"
-            android:autoSizeStepGranularity="1sp"
-            android:autoSizeTextType="uniform"
-            android:ellipsize="end"
-            android:gravity="end|center_vertical"
-            android:maxLines="1"
-            android:minHeight="32dp"
-            android:paddingStart="4dp"
-            android:text="File Queue Empty"
-            android:textColor="#000000"
-            android:textSize="15sp"
-            android:textStyle="bold" />
-    </LinearLayout>
+    <ProgressBar
+        android:id="@+id/fileTransferProgress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="6dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:indeterminate="false"
+        android:max="100"
+        android:progress="0"
+        android:visibility="gone" />
 
     <WebView
         android:id="@+id/webView"

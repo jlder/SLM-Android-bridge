@@ -6,25 +6,28 @@ copy of important recorder data.
 ## Connection and interface
 
 - Start the app: it must remain disconnected and the title must read
-  `SLM BRIDGE - Not Connected`.
+  `No / Recorder` in the left recorder-status field.
 - Switch the recorder Wi-Fi on and confirm that the recorder SSID is visible as
   `SLM-` plus five uppercase alphanumeric characters, for example `SLM-FCJAF`.
-- Select **CONNECT** and confirm the title changes to `SLM BRIDGE - Searching` while the app scans, with only `Searching` blinking. If several matching SLM recorders are visible, select the
+- Select **CONNECT** and confirm the left status changes to blinking `Searching / Recorder` while the app scans. If several matching SLM recorders are visible, select the
   recorder under test from the list.
 - Accept Android's Wi-Fi request if shown.
-- Confirm the title becomes `SLM BRIDGE - Connecting F-CJAF`, with only `Connecting F-CJAF` blinking
+- Confirm the left status becomes blinking `Connecting / F-CJAF`
   while Android connects and the bridge waits for `/api/status`.
-- Confirm the title then becomes `SLM BRIDGE - F-CJAF` style text and the recorder
+- Confirm the left status then becomes `F-CJAF / Connected` style text and the recorder
   home page opens automatically.
 - Confirm there is no **RELOAD** or **CONF** button in the bridge header.
 - Confirm the server-upload status is displayed below the centered **CONNECT/STOP**
   button as two fields on a white background: left `Server Off-line` in amber or
-  `Server Connected` in green, right `File Queue Empty` or `File Queue x/y (z%)`.
+  `Server Connected` in green, right `File Queue Empty`, `File Queue: n files waiting`, or `Transferring File (x/y)` with the progress bar active.
+  With cellular/Internet already available before pressing **CONNECT**, this
+  server field should remain connected while the bridge searches for and joins
+  the recorder Wi-Fi.
 - Select **STOP** and confirm the interface closes. Press **CONNECT** again and
   confirm a new scan/connection attempt starts.
 - With the bridge connected, stop recorder Wi-Fi. Confirm that the bridge reports
   the lost recorder connection, clears the recorder WebView, and returns to
-  `SLM BRIDGE - Not Connected`.
+  `No / Recorder` in the left recorder-status field.
 - With recorder Wi-Fi stopped, press **CONNECT** again and confirm that a fresh
   scan does not offer the stopped recorder. If Android returns cached scan results
   and the stopped recorder is selected, confirm that after connection failure the
@@ -99,8 +102,36 @@ console/HTTP error. Debug logging is compiled out of release builds.
 
 - Confirm that `CONNECT` uses fresh Android scan results when available, while still detecting a visible SLM recorder through recent cached results if Android throttles the app-initiated scan.
 
-Additional validation for 0.3.11: with a stale recorder SSID selected, the bridge should leave `Connecting ...` and return to `Not Connected` after about 30 s, not 60 s.
+Additional validation for 0.3.11: with a stale recorder SSID selected, the bridge should leave `Connecting / ...` and return to a disconnected recorder state after about 30 s, not 60 s.
 
 Additional validation for 0.3.12: after installing the APK, confirm that Android shows the SLM Bridge launcher icon and the app label `SLM Bridge`.
 
 Additional validation for 0.3.13: after installing the APK, confirm that the launcher icon is no longer cropped by the Android home-screen mask.
+
+
+Additional validation for 0.3.14: with mobile data available and showing `Server Connected`, press **CONNECT** and connect to recorder Wi-Fi. The recorder discovery/selection behavior should be unchanged, and `Server Connected` should not drop merely because the WebView is joining the recorder Wi-Fi.
+
+
+Additional validation for 0.3.18: verify the black header shows `No / Recorder` before connection, the center title appears as two fixed lines `SLM / BRIDGE`, and the side status fields are wide enough for `Disconnected`. During search/connection only the left recorder status blinks. Press STOP and confirm the left status returns to `No / Recorder`; reserve `F-CJAF / Disconnected` for unexpected recorder loss. Confirm the area below CONNECT/STOP is compact and shows `File Queue Empty` when idle and `Transferring File (x/y)` with a progress bar during upload.
+
+## Additional validation for 0.3.22
+
+Download one recorder file while cellular/Internet is available and confirm that the queue changes from `File Queue: 1 file waiting` to `Transferring File (1/1)` without requiring another recorder reconnect or Android network-change event. Download a second file while the first upload is active and confirm the display remains `Transferring File (1/2)` then `Transferring File (2/2)`, with progress movement during upload. Repeat after temporarily disabling and re-enabling cellular data; the queued upload should retry automatically once the server status returns to connected. Confirm that the queue status does not flicker every 5 seconds while waiting.
+
+## Firmware from server validation — 0.3.24
+
+1. Connect the bridge to a recorder and unlock recorder Maintenance.
+2. Open Firmware Update in the recorder Web UI.
+3. Press **Firmware from Server**.
+4. Verify that files from `<registration>/FIRMWARE` are listed when that folder exists and contains recorder `.bin` files.
+5. Remove or empty that folder and verify fallback to `SLM-STC-DATA/FIRMWARE`.
+6. Select a firmware file and press **Upload Selected Firmware** with USB power connected to the recorder.
+7. Verify download progress, recorder upload progress, recorder OTA success, and automatic recorder reboot.
+8. Repeat with USB power disconnected and verify that the recorder rejects the OTA upload.
+
+
+### Firmware from server note
+
+The bridge searches recorder-specific firmware folders using both the canonical registration folder name (for example `F-CJAF/FIRMWARE`) and the compact five-character recorder registration folder name (for example `FCJAF/FIRMWARE`) before falling back to `SLM-STC-DATA/FIRMWARE`. Folder-name matching for `FIRMWARE` is case-insensitive. Firmware `.bin` files up to 32 MiB are accepted; the recorder OTA endpoint remains the final authority for whether the image fits the device.
+
+Before testing with firmware files added through the Google Drive browser, confirm that the recorder Drive credential was regenerated with both `drive.file` and `drive.readonly`. A credential minted with only `drive.file` may still upload recorder files but may not see manually staged firmware files.

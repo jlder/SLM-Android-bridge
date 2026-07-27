@@ -19,7 +19,7 @@ recorder SSID, for example `SLM-FCJAF` becomes `F-CJAF`.
 - Target/compile API: 35
 - Java: 17
 - Android Gradle Plugin: 8.13.2
-- Current source version: 0.3.13 (`versionCode` 16)
+- Current source version: 0.3.25 (`versionCode` 28)
 
 ## Implemented behavior
 
@@ -40,10 +40,7 @@ recorder SSID, for example `SLM-FCJAF` becomes `F-CJAF`.
 - The top bridge header uses the recorder-style colors: white title text on a
   black background, a centered blue **CONNECT/STOP** button with white text, and
   a white server-upload status area below the button.
-- The title displays `SLM BRIDGE - Not Connected` when no recorder is selected,
-  blinking `SLM BRIDGE - Searching` during the Wi-Fi scan, blinking
-  `SLM BRIDGE - Connecting F-CJAF` while Android is joining/probing the recorder,
-  and steady `SLM BRIDGE - F-CJAF` after the recorder answers.
+- The header displays `No / Recorder` in the left status field when no recorder is selected, blinking `Searching / Recorder` during the Wi-Fi scan, blinking `Connecting / F-CJAF` while Android is joining/probing the recorder, and steady `F-CJAF / Connected` after the recorder answers. The center `SLM / BRIDGE` title remains fixed on two lines.
 - After Wi-Fi connects, the app probes `/api/status` and opens the recorder
   interface automatically when the recorder answers. It then continues periodic
   `/api/status` checks and disconnects if the recorder stops answering.
@@ -52,21 +49,17 @@ recorder SSID, for example `SLM-FCJAF` becomes `F-CJAF`.
 - Recorder downloads are retained in app-private storage and queued by
   registration.
 - Pending uploads continue when Internet becomes available, including when
-  the phone is away from the recorder.
+  the phone is away from the recorder. Recorder Wi-Fi and server/Drive traffic
+  are routed separately: the WebView uses the recorder network, while uploads
+  and server availability use an explicitly selected validated Internet network.
 - Successful binary uploads trigger recorder-side archive handling.
+- The recorder Firmware page can ask the bridge to list and install firmware from the server; the bridge searches `<registration>/FIRMWARE` first and falls back to `SLM-STC-DATA/FIRMWARE`.
 - Calibration reports are queued to the registration's reports folder.
-- Server-upload status is split into a left server-availability field and a right
-  queue-progress field. The left field shows `Server Off-line` in amber or
-  `Server Connected` in green. The right field shows `File Queue Empty` or
-  `File Queue x/y (z%)`.
+- Server status is shown in the right header field as `Server / Off-line` in amber or `Server / Connected` in green. The compact queue line below CONNECT/STOP shows `File Queue Empty`, `File Queue: n files waiting`, or `Transferring File (x/y)` with the progress bar active.
 
 ## Current validation state
 
-Version 0.3.9 adds blinking feedback for the `Searching` and `Connecting ...`
-title states and splits server-upload status into server availability plus queue
-progress. Version 0.3.8 waits for Android's scan-results broadcast, keeps the
-explicit `Not Connected`, `Searching`, `Connecting ...`, and connected-registration
-title states, and temporarily suppresses recorder SSIDs that just failed connection.
+Version 0.3.18 uses a fixed two-line `SLM / BRIDGE` center title, gives the side status fields more room, and returns to `No / Recorder` after an intentional STOP. Version 0.3.15 introduced the three-zone header with recorder status on the left, fixed title in the center, and server status on the right. Version 0.3.9 added blinking feedback for the active recorder status. Version 0.3.8 waits for Android's scan-results broadcast and temporarily suppresses recorder SSIDs that just failed connection.
 Version 0.3.7 relaxed scan filtering to tolerate Android scan throttling and
 monitors the recorder after connection. Version 0.3.5 added the simplified
 recorder-style bridge header, and version 0.3.4 introduced automatic recorder
@@ -116,10 +109,30 @@ signing credentials must remain outside the source tree.
 - Recorder validation notes: `RECORDER-VALIDATION.md`
 
 
-Version 0.3.10 refines the operator status area: the fixed `SLM BRIDGE -` prefix stays steady while only the `Searching` or `Connecting ...` suffix blinks. Version 0.3.9 splits server-upload status into server availability and file-queue progress. Version 0.3.8 refines SLM recorder discovery: the bridge requests a scan and uses the scan-results broadcast when Android provides fresh results. Cached results remain a fallback for throttled scans, but a recorder SSID that just failed connection is temporarily hidden until a fresh scan sees it again or the short suppression period expires.
+Version 0.3.18 uses a fixed two-line `SLM / BRIDGE` center title, gives the side status fields more room, and returns to `No / Recorder` after an intentional STOP. Version 0.3.15 introduced the three-zone header layout. Version 0.3.10 kept the earlier title prefix steady while only the active status blinked. Version 0.3.8 refines SLM recorder discovery: the bridge requests a scan and uses the scan-results broadcast when Android provides fresh results. Cached results remain a fallback for throttled scans, but a recorder SSID that just failed connection is temporarily hidden until a fresh scan sees it again or the short suppression period expires.
 
 Version 0.3.11 reduces the recorder Wi-Fi connection timeout to 30 s while keeping the existing fresh-scan and stale-SSID suppression behavior.
 
 Version 0.3.12 adds the SLM Bridge launcher icon and updates the Android launcher label to `SLM Bridge`.
 
 Version 0.3.13 reduces the launcher-icon artwork inside the adaptive-icon safe area so the home-screen icon is not cropped by Android launcher masks.
+
+Version 0.3.14 keeps the existing recorder Wi-Fi discovery/connection workflow unchanged and improves the server side of network routing. The bridge now selects a validated non-recorder Internet network for server status and Drive uploads while the recorder WebView remains on the local recorder Wi-Fi.
+
+
+Version 0.3.18 keeps `No / Recorder` for the normal stopped state, displays the fixed center title on two lines as `SLM / BRIDGE`, gives the side status fields more room, and reserves `Disconnected` for unexpected recorder loss. Version 0.3.15 changed the top window layout: centered recorder state on the left, fixed two-line `SLM / BRIDGE` title in the center, and centered server state on the right. The recorder discovery/connection and Internet-routing behavior from 0.3.14 is unchanged. The queue area below CONNECT/STOP is compact and shows `File Queue Empty`, queued file count, or `Transferring File (x/y)` with progress.
+
+## Upload and queue behavior in 0.3.22
+
+Version 0.3.22 removes the obsolete foreground upload retry from 0.3.19 and keeps the upload-latency and progress improvements. While a file is uploading, the queue line remains `Transferring File (x/y)` and the progress bar is updated while bytes are written. Pending files are displayed as `File Queue: n files waiting`. The bridge keeps Drive authorization and resolved Drive folder IDs for a short idle grace period between files, and uses 8 MiB Drive upload chunks so typical recorder files upload in a single Drive PUT request. Upload attempts are event-driven only; the previous 5-second foreground retry loop was removed to avoid unnecessary queue-status refreshes.
+
+## Firmware from server in 0.3.24
+
+The recorder Firmware page now controls server firmware installation through the Android WebView. The bridge advertises the `server-firmware` capability, lists firmware files from Drive, downloads the selected file over the validated Internet network, and uploads it to the recorder `/api/ota` endpoint over recorder Wi-Fi. The search order is `<registration>/FIRMWARE` first, then `SLM-STC-DATA/FIRMWARE` as fallback. The bridge does not call the feature "latest firmware" because older versions may intentionally be selected for recovery or test work.
+
+
+### Firmware from server note
+
+The bridge searches recorder-specific firmware folders using both the canonical registration folder name (for example `F-CJAF/FIRMWARE`) and the compact five-character recorder registration folder name (for example `FCJAF/FIRMWARE`) before falling back to `SLM-STC-DATA/FIRMWARE`. Folder-name matching for `FIRMWARE` is case-insensitive. Firmware `.bin` files up to 32 MiB are accepted; the recorder OTA endpoint remains the final authority for whether the image fits the device.
+
+Server firmware files are usually placed in Drive manually, so the recorder Drive OAuth credential must include `drive.readonly` in addition to `drive.file`. Existing credentials minted with only `drive.file` can upload bridge-created files but cannot reliably list or download browser-created firmware files. Regenerate and reprovision the recorder Drive configuration after changing this scope.

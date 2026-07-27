@@ -9,6 +9,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.util.HashMap;
+import java.util.Map;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -19,10 +21,13 @@ final class GoogleDriveUploader {
 
     private static final String DRIVE_FILES = "https://www.googleapis.com/drive/v3/files";
     private static final String DRIVE_UPLOADS = "https://www.googleapis.com/upload/drive/v3/files";
-    private static final int CHUNK_SIZE = 1024 * 1024;
+    private static final int CHUNK_SIZE = 8 * 1024 * 1024;
+    private static final int UPLOAD_BUFFER_SIZE = 64 * 1024;
     private static final int MAX_RESPONSE = 256 * 1024;
     private final NetworkProvider networks;
     private final TransferStore store;
+    private final Map<String, String> registrationFolderCache = new HashMap<>();
+    private final Map<String, String> childFolderCache = new HashMap<>();
     private String accessToken = "";
     private long accessTokenExpiry;
 
@@ -35,12 +40,21 @@ final class GoogleDriveUploader {
         this.store = store;
     }
 
-    void clearAuthorization() {
+    synchronized void clearAuthorization() {
         accessToken = "";
         accessTokenExpiry = 0;
+        registrationFolderCache.clear();
+        childFolderCache.clear();
     }
 
-    void upload(TransferStore.Item item, DriveCredentials credentials, Progress progress) throws Exception {
+    synchronized void prepare(DriveCredentials credentials, String registration) throws Exception {
+        if (credentials == null || registration == null || registration.isEmpty()) return;
+        Network network = requireInternet();
+        String token = accessToken(network, credentials);
+        registrationFolder(network, token, credentials, registration);
+    }
+
+    synchronized void upload(TransferStore.Item item, DriveCredentials credentials, Progress progress) throws Exception {
         Network network = requireInternet();
         String token = accessToken(network, credentials);
         String folder = registrationFolder(network, token, credentials, item.registration);
@@ -69,6 +83,10 @@ final class GoogleDriveUploader {
             offset = 0;
         }
 
+        if (item.file.length() > 0) {
+            int preparedPercent = (int) Math.min(99, Math.max(1, offset * 100 / item.file.length()));
+            progress.update(preparedPercent);
+        }
         uploadChunks(network, token, item, offset, progress);
         store.markUploaded(item);
         progress.update(100);
@@ -100,24 +118,38 @@ final class GoogleDriveUploader {
 
     private String registrationFolder(Network network, String token, DriveCredentials credentials,
                                       String registration) throws Exception {
+        String cacheKey = credentials.rootFolderId + "\n" + registration;
+        String cached = registrationFolderCache.get(cacheKey);
+        if (cached != null && !cached.isEmpty()) return cached;
+
         String q = "'" + escapeQuery(credentials.rootFolderId) + "' in parents and name = '"
                 + escapeQuery(registration) + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
         String url = DRIVE_FILES + "?spaces=drive&pageSize=2&fields=files(id,name)&q=" + query(q);
         JSONObject found = authorizedJson(network, token, url, "GET", null, "Drive folder lookup");
         JSONArray files = found.optJSONArray("files");
-        if (files != null && files.length() > 0) return files.getJSONObject(0).getString("id");
+        if (files != null && files.length() > 0) {
+            String id = files.getJSONObject(0).getString("id");
+            registrationFolderCache.put(cacheKey, id);
+            return id;
+        }
 
         JSONObject body = new JSONObject()
                 .put("name", registration)
                 .put("mimeType", "application/vnd.google-apps.folder")
                 .put("parents", new JSONArray().put(credentials.rootFolderId))
                 .put("appProperties", new JSONObject().put("slmRegistration", registration));
-        return authorizedJson(network, token, DRIVE_FILES + "?fields=id", "POST", body,
+        String id = authorizedJson(network, token, DRIVE_FILES + "?fields=id", "POST", body,
                 "Drive folder creation").getString("id");
+        registrationFolderCache.put(cacheKey, id);
+        return id;
     }
 
     private String childFolder(Network network, String token, String parent, String name,
                                String registration) throws Exception {
+        String cacheKey = parent + "\n" + name;
+        String cached = childFolderCache.get(cacheKey);
+        if (cached != null && !cached.isEmpty()) return cached;
+
         String q = "'" + escapeQuery(parent) + "' in parents and name = '"
                 + escapeQuery(name)
                 + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
@@ -125,7 +157,9 @@ final class GoogleDriveUploader {
         JSONArray files = authorizedJson(network, token, url, "GET", null,
                 "Drive report folder lookup").optJSONArray("files");
         if (files != null && files.length() > 0) {
-            return files.getJSONObject(0).getString("id");
+            String id = files.getJSONObject(0).getString("id");
+            childFolderCache.put(cacheKey, id);
+            return id;
         }
 
         JSONObject body = new JSONObject()
@@ -135,8 +169,10 @@ final class GoogleDriveUploader {
                 .put("appProperties", new JSONObject()
                         .put("slmRegistration", registration)
                         .put("slmCollection", name));
-        return authorizedJson(network, token, DRIVE_FILES + "?fields=id", "POST", body,
+        String id = authorizedJson(network, token, DRIVE_FILES + "?fields=id", "POST", body,
                 "Drive report folder creation").getString("id");
+        childFolderCache.put(cacheKey, id);
+        return id;
     }
 
     private boolean isDuplicate(Network network, String token, String folder, String sha256) throws Exception {
@@ -205,26 +241,45 @@ final class GoogleDriveUploader {
         if (offset >= total) return;
         try (RandomAccessFile file = new RandomAccessFile(item.file, "r")) {
             file.seek(offset);
-            byte[] buffer = new byte[CHUNK_SIZE];
+            byte[] buffer = new byte[UPLOAD_BUFFER_SIZE];
+            int lastPercent = (int) Math.min(99, offset * 100 / total);
             while (offset < total) {
-                int wanted = (int) Math.min(buffer.length, total - offset);
-                file.readFully(buffer, 0, wanted);
-                long end = offset + wanted - 1;
+                long chunkStart = offset;
+                int wanted = (int) Math.min(CHUNK_SIZE, total - chunkStart);
+                long end = chunkStart + wanted - 1;
                 HttpURLConnection connection = open(network, item.uploadSession, "PUT", false);
                 connection.setRequestProperty("Authorization", "Bearer " + token);
                 connection.setRequestProperty("Content-Type", "application/octet-stream");
-                connection.setRequestProperty("Content-Range", "bytes " + offset + "-" + end + "/" + total);
+                connection.setRequestProperty("Content-Range", "bytes " + chunkStart + "-" + end + "/" + total);
                 connection.setFixedLengthStreamingMode(wanted);
                 try {
                     connection.connect();
-                    try (OutputStream out = connection.getOutputStream()) { out.write(buffer, 0, wanted); }
+                    long written = 0;
+                    try (OutputStream out = connection.getOutputStream()) {
+                        while (written < wanted) {
+                            if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+                            int count = (int) Math.min(buffer.length, wanted - written);
+                            file.readFully(buffer, 0, count);
+                            out.write(buffer, 0, count);
+                            written += count;
+                            int percent = (int) Math.min(99, (chunkStart + written) * 100 / total);
+                            if (percent > lastPercent) {
+                                lastPercent = percent;
+                                progress.update(percent);
+                            }
+                        }
+                    }
                     int status = connection.getResponseCode();
                     if (status != 308 && status != 200 && status != 201) {
                         throw httpError(connection, "Drive file upload");
                     }
                     offset = status == 308 ? parseRange(connection.getHeaderField("Range")) : total;
                     store.updateSession(item, item.uploadSession, offset);
-                    progress.update((int) Math.min(99, offset * 100 / total));
+                    int confirmedPercent = (int) Math.min(99, offset * 100 / total);
+                    if (confirmedPercent > lastPercent) {
+                        lastPercent = confirmedPercent;
+                        progress.update(confirmedPercent);
+                    }
                 } finally {
                     connection.disconnect();
                 }

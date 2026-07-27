@@ -32,11 +32,22 @@ final class NetworkCoordinator {
     Network recorderNetwork() { return recorderNetwork; }
     Network cellularNetwork() { return cellularNetwork; }
     Network uploadNetwork() {
-        // Recorder Wi-Fi has no Internet.  Keep Drive traffic on cellular
-        // while it is active; away from the recorder, use the phone's normal
-        // validated Internet connection (Wi-Fi or cellular).
-        if (recorderNetwork != null) return cellularNetwork;
-        return defaultInternetNetwork;
+        // Recorder Wi-Fi has no Internet.  Drive/server traffic must therefore
+        // use a validated Internet network selected explicitly with
+        // Network.openConnection(), even while the WebView process is bound to
+        // the recorder Wi-Fi for the local recorder interface.
+        Network cellular = cellularNetwork;
+        if (isUsableInternet(cellular)) return cellular;
+
+        Network defaultInternet = defaultInternetNetwork;
+        if (isUsableInternet(defaultInternet)) return defaultInternet;
+
+        // Android callbacks can lag while the phone is switching to recorder
+        // Wi-Fi.  Query the current network list to avoid showing Server
+        // Off-line when cellular/Internet is already available.
+        Network discoveredCellular = findValidatedInternetNetwork(true);
+        if (discoveredCellular != null) return discoveredCellular;
+        return findValidatedInternetNetwork(false);
     }
 
     void connect(String ssid, String password) {
@@ -58,7 +69,7 @@ final class NetworkCoordinator {
                 recorderNetwork = network;
                 // WebView does not expose an API for selecting a Network. Bind the
                 // process to the recorder Wi-Fi so its UI loads from the recorder;
-                // uploads still use cellularNetwork.openConnection explicitly.
+                // uploads still use uploadNetwork().openConnection explicitly.
                 connectivity.bindProcessToNetwork(network);
                 notifyListener();
             }
@@ -179,6 +190,33 @@ final class NetworkCoordinator {
         NetworkCapabilities capabilities = connectivity.getNetworkCapabilities(network);
         defaultInternetNetwork = isValidatedInternet(capabilities) ? network : null;
         notifyListener();
+    }
+
+    private Network findValidatedInternetNetwork(boolean cellularOnly) {
+        try {
+            Network[] networks = connectivity.getAllNetworks();
+            if (networks == null) return null;
+            for (Network network : networks) {
+                if (!isUsableInternet(network)) continue;
+                NetworkCapabilities capabilities = connectivity.getNetworkCapabilities(network);
+                if (cellularOnly
+                        && (capabilities == null
+                        || !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR))) {
+                    continue;
+                }
+                return network;
+            }
+        } catch (RuntimeException ignored) {
+            // Keep status conservative if Android cannot enumerate networks.
+        }
+        return null;
+    }
+
+    private boolean isUsableInternet(Network network) {
+        if (network == null) return false;
+        Network recorder = recorderNetwork;
+        if (recorder != null && network.equals(recorder)) return false;
+        return isValidatedInternet(connectivity.getNetworkCapabilities(network));
     }
 
     private static boolean isValidatedInternet(NetworkCapabilities capabilities) {

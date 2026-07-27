@@ -7,7 +7,7 @@ Android supplies network routing, durable storage, and cellular upload.
 ## Implemented
 
 - Android 10+ `WifiNetworkSpecifier` connection to the recorder.
-- Explicit cellular network request for Google Drive uploads.
+- Explicit cellular/validated-Internet routing for Google Drive uploads and server status.
 - Existing recorder UI in a recorder-origin-restricted WebView.
 - Recorder-origin JavaScript alerts, confirmations, and prompts required by the
   existing recorder UI.
@@ -34,18 +34,14 @@ Android supplies network routing, durable storage, and cellular upload.
   The WPA2 password is generated as `SLM` plus the reversed five-character
   registration, for example `SLMFAJCF`. No recorder SSID/password setup menu is
   required.
-- Simplified bridge header: black title bar with white `SLM BRIDGE - ...` text,
-  one centered blue **CONNECT/STOP** button, and a two-field server-upload
-  status line below the button.
-- Connection-state feedback in the title bar: the fixed `SLM BRIDGE -` prefix remains steady while only `Searching` blinks when Android
-  is refreshing Wi-Fi scan results, and only `Connecting F-CJAF` blinks after a recorder
-  SSID is selected and the bridge is joining/probing it, and `F-CJAF` is steady
-  after the recorder answers.
+- Simplified bridge header: black header with centered recorder status on the left, fixed white two-line `SLM / BRIDGE` title in the center, centered server status on the right, and one centered blue **CONNECT/STOP** button.
+- Connection-state feedback in the left recorder-status field: `No / Recorder` before connection, blinking `Searching / Recorder` during Wi-Fi discovery, blinking `Connecting / F-CJAF` while joining/probing the recorder, and steady `F-CJAF / Connected` after the recorder answers.
 - Periodic recorder health checks after connection. If the recorder Wi-Fi or Web
   service disappears, the bridge disconnects, clears the WebView, and returns to
-  `Not Connected`.
-- Server-upload status is split into `Server Off-line` / `Server Connected` on
-  the left and `File Queue Empty` or `File Queue x/y (z%)` on the right.
+  `No / Recorder`.
+- Server status is shown in the right header field as `Server / Off-line` or `Server / Connected`. The compact line below CONNECT/STOP shows `File Queue Empty`, `File Queue: n files waiting`, or `Transferring File (x/y)` with a progress bar during file transfer.
+  The server side uses an explicitly selected validated Internet network and is
+  kept separate from the local recorder Wi-Fi network used by the WebView.
 
 ## Status
 
@@ -69,24 +65,16 @@ end-to-end testing with the recorder endpoint and target Drive account.
 
 The app deliberately remains disconnected on startup. **CONNECT** performs recorder
 discovery and connection in one operator action. Before **CONNECT** is pressed, the
-title is `SLM BRIDGE - Not Connected`. After **CONNECT**, the title becomes
-`SLM BRIDGE - Searching` while Android is asked to refresh Wi-Fi scan results.
-Only `Searching` blinks to show that discovery is in progress; the `SLM BRIDGE -` prefix stays fixed. After a recorder SSID
-is selected, only the `Connecting F-CJAF` suffix blinks
-text while Android associates with the recorder and the bridge waits
-for `/api/status`. When the recorder answers, the app opens the recorder interface
-automatically and the title becomes `SLM BRIDGE - F-CJAF`. If the recorder
-disappears after connection, periodic health checks return the bridge to
-`SLM BRIDGE - Not Connected` and clear the stale WebView page.
+left recorder status shows `No / Recorder`. After **CONNECT**, it shows blinking `Searching / Recorder` while Android is asked to refresh Wi-Fi scan results. After a recorder SSID is selected, it shows blinking `Connecting / F-CJAF` while Android associates with the recorder and the bridge waits for `/api/status`. When the recorder answers, the app opens the recorder interface automatically and the left status becomes `F-CJAF / Connected`. Pressing **STOP** returns the left status to `No / Recorder`. If the recorder disappears after connection without the user pressing STOP, periodic health checks show `F-CJAF / Disconnected` and clear the stale WebView page.
 
 Recorder transfers are streamed into app-private phone storage and recorded in a
 durable queue before upload. When cellular data is ready, the app refreshes a
-Google access token and uploads directly to Drive using resumable 1 MiB chunks.
+Google access token and uploads directly to Drive using resumable 8 MiB chunks.
 Pending transfers survive an app or phone restart and retry after the user
 reconnects to the recorder. Once authorization has been collected, stopping the
-recorder Wi-Fi does not stop the cellular upload request, so a queued upload may
-finish as the pilot leaves the recorder. The recorder authorization is retained
-only while the queue contains pending uploads.
+recorder Wi-Fi does not stop the explicitly routed Internet upload request, so a
+queued upload may finish as the pilot leaves the recorder. The recorder authorization is retained
+while the recorder remains connected, and is cleared once the recorder is disconnected and the queue is idle.
 
 ## Security status
 
@@ -135,8 +123,10 @@ the unresolved Cloud Run routing problem and the cost/operation of another host.
 
 `tools/oauth-bootstrap.ps1` performs the administrator-only OAuth flow. It
 requires a Google **Web application** client whose
-redirect URI is exactly `http://localhost:8080/oauth2/callback` and requests only
-the `https://www.googleapis.com/auth/drive.file` scope. It stores the refresh
+redirect URI is exactly `http://localhost:8080/oauth2/callback`. The bootstrap
+requests `https://www.googleapis.com/auth/drive.file` for bridge-created upload
+files and `https://www.googleapis.com/auth/drive.readonly` so server firmware
+files staged manually in Google Drive can be listed and downloaded. It stores the refresh
 credential outside the source tree under the current Windows user's Local AppData
 directory and creates the app-managed `SLM-STC-DATA` folder.
 
@@ -167,17 +157,42 @@ SLMAndroid.downloadRecorderFile(JSON.stringify({
   filename: 'recording.bin', analyze: true, upload: true
 }))
 SLMAndroid.deleteStoredFile(transferId)
+SLMAndroid.listServerFirmware()
+SLMAndroid.installServerFirmware(JSON.stringify(selectedFirmware))
 ```
 
-Progress arrives as `slm-transfer-event`. States are `download-started`,
+Progress arrives as `slm-transfer-event`. Firmware-from-server events arrive as `slm-firmware-event`. States are `download-started`,
 `downloading`, `download-complete`, `upload-pending`, `upload-started`, `uploading`,
 `upload-complete`, and `failed`.
 
 
-Wi-Fi discovery first requests a fresh Android scan and waits for `SCAN_RESULTS_AVAILABLE_ACTION`. When Android reports fresh results, only fresh recorder SSIDs are offered. If Android throttles the scan, the bridge can fall back to recent cached results, but SSIDs that just failed to connect are temporarily suppressed so a stopped recorder is not immediately offered again from stale scan data. Version 0.3.10 keeps the `SLM BRIDGE -` title prefix steady and blinks only the active `Searching` or `Connecting ...` suffix. Version 0.3.9 splits server-upload status into server availability and queue progress.
+Wi-Fi discovery first requests a fresh Android scan and waits for `SCAN_RESULTS_AVAILABLE_ACTION`. When Android reports fresh results, only fresh recorder SSIDs are offered. If Android throttles the scan, the bridge can fall back to recent cached results, but SSIDs that just failed to connect are temporarily suppressed so a stopped recorder is not immediately offered again from stale scan data. Version 0.3.18 uses a fixed two-line `SLM / BRIDGE` center title, gives the side status fields more room, and returns to `No / Recorder` after an intentional STOP. Version 0.3.15 introduced the three-zone header layout. Version 0.3.10 kept the earlier title prefix steady while only the active status blinked.
 
-Version 0.3.11 reduces the Android recorder Wi-Fi connection timeout from 60 s to 30 s so a stopped or unavailable recorder returns to `Not Connected` more quickly.
+Version 0.3.11 reduces the Android recorder Wi-Fi connection timeout from 60 s to 30 s so a stopped or unavailable recorder returns to the disconnected recorder state more quickly.
 
 Version 0.3.12 adds the SLM Bridge launcher icon and sets the Android launcher label to `SLM Bridge`.
 
 Version 0.3.13 reduces the launcher-icon artwork inside the adaptive-icon safe area so the home-screen icon is not cropped by Android launcher masks.
+
+
+Version 0.3.14 keeps recorder Wi-Fi discovery and connection behavior unchanged, but improves Internet routing for the server-upload status and Drive transfers. While the WebView is bound to recorder Wi-Fi, server checks and uploads explicitly use a validated Internet network, preferring cellular and falling back to any validated non-recorder Internet network.
+
+
+Version 0.3.18 refines the main bridge header: the no-recorder state is shown as `No / Recorder`, the center title is displayed as two fixed lines `SLM / BRIDGE`, the side status fields are wider, and an intentional STOP returns to `No / Recorder`. Version 0.3.15 introduced the three-zone header with centered recorder status on the left, fixed two-line `SLM / BRIDGE` title in the center, centered server status on the right, and a compact queue/transfer line below CONNECT/STOP.
+
+### Upload and queue behavior in 0.3.22
+
+Version 0.3.22 removes the obsolete 5-second foreground upload retry from 0.3.19 and keeps the upload-latency improvements. The bridge keeps Drive authorization and resolved recorder folder IDs in memory for a short idle grace period instead of clearing them as soon as the queue becomes empty, uses 8 MiB Drive chunks, and streams upload progress while data is written. Pending files are displayed as `File Queue: n files waiting`; active uploads remain `Transferring File (x/y)` with the progress bar active. Uploads are started by explicit events: file download completion, Internet availability, and completion of the previous queued upload; there is no periodic 5-second retry loop.
+
+### Firmware from server in 0.3.24
+
+Version 0.3.24 adds the Android-side support for the recorder Web Firmware page to request firmware from the server. The operator remains in the recorder Web UI. The bridge only executes the network work that the recorder cannot do itself while operating as a local Wi-Fi access point: it lists firmware files from Google Drive over the validated Internet network, downloads the selected `.bin` file, then uploads it to the recorder OTA endpoint over recorder Wi-Fi.
+
+Firmware lookup first checks the connected recorder's Drive folder, `<registration>/FIRMWARE`. If that folder does not exist or contains no accepted recorder firmware `.bin`, the bridge falls back to the common `SLM-STC-DATA/FIRMWARE` folder. Multiple firmware versions may be listed so the operator can deliberately select a previous version when needed.
+
+
+### Firmware from server note
+
+The bridge searches recorder-specific firmware folders using both the canonical registration folder name (for example `F-CJAF/FIRMWARE`) and the compact five-character recorder registration folder name (for example `FCJAF/FIRMWARE`) before falling back to `SLM-STC-DATA/FIRMWARE`. Folder-name matching for `FIRMWARE` is case-insensitive. Firmware `.bin` files up to 32 MiB are accepted; the recorder OTA endpoint remains the final authority for whether the image fits the device.
+
+Server firmware files are expected to be staged manually in Google Drive. The recorder Drive authorization must therefore be generated with firmware read access (`drive.readonly`) in addition to the existing app-file upload access (`drive.file`). If a firmware `.bin` is visible in the Google Drive browser but not in SLM Bridge, regenerate the OAuth credential with `tools/oauth-bootstrap.ps1`, export the recorder Drive configuration again, and reprovision/rebuild the recorder.

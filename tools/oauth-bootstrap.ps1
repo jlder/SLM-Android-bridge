@@ -11,7 +11,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $redirectUri = 'http://localhost:8080/oauth2/callback'
-$driveScope = 'https://www.googleapis.com/auth/drive.file'
+$driveScope = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly'
 $folderName = 'SLM-STC-DATA'
 
 function ConvertTo-UrlValue([string]$Value) {

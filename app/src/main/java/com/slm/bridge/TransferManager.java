@@ -23,6 +23,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class TransferManager {
+    private static final long CREDENTIAL_IDLE_GRACE_MS = 120_000L;
+
     interface QueueListener { void onQueueStatus(QueueStatus status); }
 
     static final class QueueStatus {
@@ -66,9 +68,14 @@ final class TransferManager {
     // to continue in the background during the next recorder download.
     private final ExecutorService downloadExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService uploadExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService preparationExecutor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final AtomicBoolean retryScheduled = new AtomicBoolean();
     private final AtomicBoolean archiveScheduled = new AtomicBoolean();
+    private final AtomicBoolean credentialPrefetchScheduled = new AtomicBoolean();
+    private final AtomicBoolean credentialClearScheduled = new AtomicBoolean();
+    private volatile boolean uploadActive;
+    private volatile int activeUploadPercent;
     // These counters remain on the serial upload executor. They keep a batch
     // labelled 1 of N, 2 of N, etc. even though completed items disappear
     // from TransferStore.pendingUploads().
@@ -76,6 +83,11 @@ final class TransferManager {
     private int uploadBatchCompleted;
     private int activeUploadPosition = 1;
     private int activeUploadTotal = 1;
+
+    private final Runnable credentialIdleClearRunnable = () -> {
+        credentialClearScheduled.set(false);
+        uploadExecutor.execute(this::clearCredentialsIfStillIdle);
+    };
 
     TransferManager(NetworkCoordinator networks, AppSettings settings, TransferStore store,
                     DriveCredentialStore credentialStore, WebView webView,
@@ -92,6 +104,7 @@ final class TransferManager {
         this.queueListener = queueListener;
         UploadJobService.cancel(context);
         publishQueueSnapshot(null);
+        requestUploadRetry();
     }
 
     void enqueue(String requestJson) { downloadExecutor.execute(() -> execute(requestJson)); }
@@ -136,11 +149,9 @@ final class TransferManager {
     void onNetworksChanged() {
         publishQueueSnapshot(null);
         schedulePendingArchives();
-        if (!store.hasPendingUploads() || !retryScheduled.compareAndSet(false, true)) return;
-        uploadExecutor.execute(() -> {
-            try { retryPending(); }
-            finally { retryScheduled.set(false); }
-        });
+        prefetchCredentialsIfPossible();
+        requestUploadRetry();
+        clearCredentialsWhenIdle();
     }
 
     void markAnalysisComplete(String transferId) {
@@ -157,8 +168,10 @@ final class TransferManager {
     }
 
     void close() {
+        main.removeCallbacksAndMessages(null);
         downloadExecutor.shutdownNow();
         uploadExecutor.shutdownNow();
+        preparationExecutor.shutdownNow();
         if (store.hasPendingUploads()) UploadJobService.schedule(context);
         else UploadJobService.cancel(context);
     }
@@ -323,8 +336,20 @@ final class TransferManager {
                 publishQueueSnapshot(null);
                 return;
             }
+            if (networks.uploadNetwork() == null) {
+                emit(item, "upload-pending", 0, "Waiting for Internet");
+                publishQueueSnapshot(null);
+                return;
+            }
+
+            cancelScheduledCredentialClear();
+            beginUploadBatchItem();
+            emit(item, "upload-started", 0, null);
+            publishUploading(0);
+
             DriveCredentials credentials = availableCredentials();
             if (credentials == null) {
+                clearActiveUpload();
                 emit(item, "upload-pending", 0,
                         networks.recorderNetwork() == null
                                 ? "Reconnect to the recorder to obtain Drive authorization"
@@ -332,14 +357,7 @@ final class TransferManager {
                 publishQueueSnapshot("Drive authorization unavailable");
                 return;
             }
-            if (networks.uploadNetwork() == null) {
-                emit(item, "upload-pending", 0, "Waiting for Internet");
-                publishQueueSnapshot(null);
-                return;
-            }
-            beginUploadBatchItem();
-            emit(item, "upload-started", 0, null);
-            publishUploading(0);
+
             drive.upload(item, credentials, percent -> {
                 emit(item, "uploading", percent, null);
                 publishUploading(percent);
@@ -347,13 +365,27 @@ final class TransferManager {
             completeUploadBatchItem();
             emit(item, "upload-complete", 100, null);
             if (!item.archiveRequested) store.delete(item.id);
-            publishQueueSnapshot(null);
+            clearActiveUpload();
+            if (store.hasPendingUploads()) requestUploadRetry();
+            else publishQueueSnapshot(null);
             schedulePendingArchives();
             clearCredentialsWhenIdle();
         } catch (Exception e) {
+            clearActiveUpload();
             emit(item, "upload-pending", 0, message(e));
             publishQueueSnapshot(message(e));
         }
+    }
+
+
+    private void requestUploadRetry() {
+        if (!store.hasPendingUploads()) return;
+        cancelScheduledCredentialClear();
+        if (!retryScheduled.compareAndSet(false, true)) return;
+        uploadExecutor.execute(() -> {
+            try { retryPending(); }
+            finally { retryScheduled.set(false); }
+        });
     }
 
     private void retryPending() {
@@ -361,6 +393,12 @@ final class TransferManager {
             clearCredentialsWhenIdle();
             return;
         }
+        if (networks.uploadNetwork() == null) {
+            emitPendingError("Waiting for Internet");
+            publishQueueSnapshot(null);
+            return;
+        }
+
         DriveCredentials credentials;
         try { credentials = availableCredentials(); }
         catch (Exception e) {
@@ -373,14 +411,11 @@ final class TransferManager {
             publishQueueSnapshot("Drive authorization unavailable");
             return;
         }
-        if (networks.uploadNetwork() == null) {
-            emitPendingError("Waiting for Internet");
-            publishQueueSnapshot(null);
-            return;
-        }
+
         for (TransferStore.Item item : store.pendingUploads()) {
             try {
                 if (item.uploaded) continue;
+                cancelScheduledCredentialClear();
                 beginUploadBatchItem();
                 emit(item, "upload-started", 0, null);
                 publishUploading(0);
@@ -391,16 +426,19 @@ final class TransferManager {
                 completeUploadBatchItem();
                 emit(item, "upload-complete", 100, null);
                 if (!item.archiveRequested) store.delete(item.id);
-                publishQueueSnapshot(null);
                 schedulePendingArchives();
             } catch (Exception e) {
+                clearActiveUpload();
                 emit(item, "upload-pending", 0, message(e));
                 publishQueueSnapshot(message(e));
                 break;
             }
         }
+        clearActiveUpload();
+        publishQueueSnapshot(null);
         clearCredentialsWhenIdle();
     }
+
 
     private void schedulePendingArchives() {
         if (networks.recorderNetwork() == null || store.pendingArchives().isEmpty()
@@ -436,6 +474,29 @@ final class TransferManager {
         }
     }
 
+    private void prefetchCredentialsIfPossible() {
+        if (networks.recorderNetwork() == null) return;
+        if (!credentialPrefetchScheduled.compareAndSet(false, true)) return;
+        preparationExecutor.execute(() -> {
+            try {
+                DriveCredentials credentials = credentialStore.load();
+                if (credentials == null && networks.recorderNetwork() != null) {
+                    credentials = credentialClient.fetch();
+                    credentialStore.save(credentials);
+                }
+                String registration = settings.gliderRegistration();
+                if (credentials != null && !registration.isEmpty() && networks.uploadNetwork() != null) {
+                    drive.prepare(credentials, registration);
+                }
+            } catch (Exception ignored) {
+                // Upload handling reports the authorization error if credentials
+                // are still unavailable when a file actually needs uploading.
+            } finally {
+                credentialPrefetchScheduled.set(false);
+            }
+        });
+    }
+
     private DriveCredentials availableCredentials() throws Exception {
         DriveCredentials credentials = credentialStore.load();
         if (credentials != null) return credentials;
@@ -446,12 +507,30 @@ final class TransferManager {
     }
 
     private void clearCredentialsWhenIdle() {
-        if (!store.hasPendingUploads()) {
-            uploadBatchTotal = 0;
-            uploadBatchCompleted = 0;
-            credentialStore.clear();
-            drive.clearAuthorization();
-            UploadJobService.cancel(context);
+        if (store.hasPendingUploads() || uploadActive) {
+            cancelScheduledCredentialClear();
+            return;
+        }
+        uploadBatchTotal = 0;
+        uploadBatchCompleted = 0;
+        UploadJobService.cancel(context);
+        if (credentialClearScheduled.compareAndSet(false, true)) {
+            main.postDelayed(credentialIdleClearRunnable, CREDENTIAL_IDLE_GRACE_MS);
+        }
+    }
+
+    private void clearCredentialsIfStillIdle() {
+        if (store.hasPendingUploads() || uploadActive) return;
+        uploadBatchTotal = 0;
+        uploadBatchCompleted = 0;
+        drive.clearAuthorization();
+        if (networks.recorderNetwork() == null) credentialStore.clear();
+        UploadJobService.cancel(context);
+    }
+
+    private void cancelScheduledCredentialClear() {
+        if (credentialClearScheduled.getAndSet(false)) {
+            main.removeCallbacks(credentialIdleClearRunnable);
         }
     }
 
@@ -461,11 +540,22 @@ final class TransferManager {
 
     private void publishUploading(int percent) {
         int safePercent = Math.max(0, Math.min(100, percent));
+        uploadActive = true;
+        activeUploadPercent = safePercent;
+        int dynamicTotal = Math.max(activeUploadTotal,
+                uploadBatchCompleted + Math.max(1, store.pendingUploads().size()));
+        activeUploadTotal = dynamicTotal;
         publish(new QueueStatus("SERVER UPLOAD: Uploading " + activeUploadPosition
                 + " of " + activeUploadTotal
-                + " \u2014 " + safePercent + "%", QueueStatus.UPLOADING,
+                + " — " + safePercent + "%", QueueStatus.UPLOADING,
                 activeUploadPosition, activeUploadTotal, safePercent));
     }
+
+    private void clearActiveUpload() {
+        uploadActive = false;
+        activeUploadPercent = 0;
+    }
+
 
     private void beginUploadBatchItem() {
         int pending = Math.max(1, store.pendingUploads().size());
@@ -487,6 +577,10 @@ final class TransferManager {
 
     private void publishQueueSnapshot(String error) {
         int count = store.pendingUploads().size();
+        if (uploadActive && count > 0) {
+            publishUploading(activeUploadPercent);
+            return;
+        }
         if (count == 0) {
             publish(new QueueStatus("SERVER UPLOAD: Queue empty", QueueStatus.IDLE, 0, 0, 0));
             return;
@@ -497,12 +591,13 @@ final class TransferManager {
                     + " waiting for Internet", QueueStatus.WAITING, 0, count, 0));
         } else if (error != null && !error.isEmpty()) {
             publish(new QueueStatus("SERVER UPLOAD: " + count + " " + files
-                    + " queued \u2014 retry pending", QueueStatus.WAITING, 0, count, 0));
+                    + " queued — retry pending", QueueStatus.WAITING, 0, count, 0));
         } else {
             publish(new QueueStatus("SERVER UPLOAD: " + count + " " + files
                     + " queued", QueueStatus.WAITING, 0, count, 0));
         }
     }
+
 
     private void publish(QueueStatus status) {
         if (queueListener != null) queueListener.onQueueStatus(status);

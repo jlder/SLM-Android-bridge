@@ -7,10 +7,13 @@ import org.json.JSONObject;
 public final class RecorderJavascriptBridge {
     private final TransferManager transfers;
     private final NetworkCoordinator networks;
+    private final FirmwareManager firmware;
 
-    RecorderJavascriptBridge(TransferManager transfers, NetworkCoordinator networks) {
+    RecorderJavascriptBridge(TransferManager transfers, NetworkCoordinator networks,
+                             FirmwareManager firmware) {
         this.transfers = transfers;
         this.networks = networks;
+        this.firmware = firmware;
     }
 
     @JavascriptInterface public String getCapabilities() {
@@ -27,7 +30,8 @@ public final class RecorderJavascriptBridge {
                     .put("automatic-recorder-archive")
                     .put("calibration-report-upload")
                     .put("ssid-registration")
-                    .put("transfer-progress"));
+                    .put("transfer-progress")
+                    .put("server-firmware"));
             result.put("recorderConnected", networks.recorderNetwork() != null);
             result.put("cellularConnected", networks.cellularNetwork() != null);
             result.put("internetConnected", networks.uploadNetwork() != null);
@@ -51,5 +55,13 @@ public final class RecorderJavascriptBridge {
 
     @JavascriptInterface public void analysisComplete(String transferId) {
         transfers.markAnalysisComplete(transferId);
+    }
+
+    @JavascriptInterface public void listServerFirmware() {
+        firmware.listServerFirmware();
+    }
+
+    @JavascriptInterface public void installServerFirmware(String requestJson) {
+        firmware.installServerFirmware(requestJson);
     }
 }

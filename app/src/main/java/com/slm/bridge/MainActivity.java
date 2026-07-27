@@ -21,9 +21,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.text.SpannableString;
-import android.text.Spanned;
-import android.text.style.ForegroundColorSpan;
 import android.util.Log;
 import android.graphics.Insets;
 import android.view.View;
@@ -38,6 +35,7 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.Button;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -58,13 +56,11 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private static final int CREATE_DOCUMENT_REQUEST = 42;
     private static final int OPEN_DOCUMENT_REQUEST = 43;
     private static final String LOG_TAG = "SLM-Web";
-    private static final String BRIDGE_TITLE_PREFIX = "SLM BRIDGE - ";
-
     private static final int COLOR_BLUE = Color.rgb(34, 85, 170);
     private static final int COLOR_GREY = Color.rgb(145, 145, 145);
-    private static final int COLOR_GREEN = Color.rgb(0, 150, 0);
-    private static final int COLOR_AMBER = Color.rgb(255, 176, 0);
-    private static final int COLOR_TITLE_BLINK_DIM = Color.rgb(115, 115, 115);
+    private static final int COLOR_GREEN = Color.rgb(142, 214, 82);
+    private static final int COLOR_AMBER = Color.rgb(255, 196, 0);
+    private static final int COLOR_STATUS_BLINK_DIM = Color.rgb(80, 80, 80);
     private static final long RECORDER_SCAN_SETTLE_MS = 2_000L;
     private static final long RECORDER_SCAN_FRESH_TIMEOUT_MS = 8_000L;
     private static final long RECORDER_SCAN_FRESH_MARGIN_MS = 10_000L;
@@ -76,13 +72,16 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private AppSettings settings;
     private NetworkCoordinator networks;
     private TransferManager transfers;
+    private FirmwareManager firmwareManager;
     private RecorderFileExporter fileExporter;
     private RecorderFileExporter.Request pendingDownload;
     private ValueCallback<Uri[]> pendingFileChooser;
     private WebView webView;
+    private TextView recorderStatus;
     private TextView bridgeTitle;
     private TextView serverStatus;
     private TextView fileQueueStatus;
+    private ProgressBar fileTransferProgress;
     private Button connectButton;
     private boolean recorderConnectionRequested;
     private boolean recorderScanPending;
@@ -101,14 +100,16 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private BroadcastReceiver recorderScanReceiver;
     private TransferManager.QueueStatus latestQueueStatus;
     private Network latestUploadNetwork;
-    private boolean titleBlinking;
-    private boolean titleBlinkTextVisible = true;
-    private String bridgeTitleSuffix = "Not Connected";
+    private boolean recorderStatusBlinking;
+    private boolean showDisconnectedRecorder;
+    private boolean recorderStatusTextVisible = true;
+    private String recorderStatusText = "No\nRecorder";
+    private int recorderStatusColor = COLOR_AMBER;
     private final Runnable titleBlinkRunnable = new Runnable() {
         @Override public void run() {
-            if (!titleBlinking) return;
-            titleBlinkTextVisible = !titleBlinkTextVisible;
-            renderBridgeTitle();
+            if (!recorderStatusBlinking) return;
+            recorderStatusTextVisible = !recorderStatusTextVisible;
+            renderRecorderStatus();
             mainHandler.postDelayed(this, TITLE_BLINK_INTERVAL_MS);
         }
     };
@@ -121,17 +122,21 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         settings = new AppSettings(this);
         debugBuild = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         webView = findViewById(R.id.webView);
+        recorderStatus = findViewById(R.id.recorderStatus);
         bridgeTitle = findViewById(R.id.bridgeTitle);
         serverStatus = findViewById(R.id.serverStatus);
         fileQueueStatus = findViewById(R.id.fileQueueStatus);
+        fileTransferProgress = findViewById(R.id.fileTransferProgress);
         connectButton = findViewById(R.id.connectButton);
         networks = new NetworkCoordinator(this, this);
         fileExporter = new RecorderFileExporter(this, networks, settings, this::onExportFinished);
         TransferStore store = new TransferStore(this);
+        DriveCredentialStore driveCredentialStore = new DriveCredentialStore(this);
         transfers = new TransferManager(networks, settings, store,
-                new DriveCredentialStore(this), webView,
+                driveCredentialStore, webView,
                 status -> runOnUiThread(() -> updateServerQueueUi(status)));
-        configureWebView(store, transfers);
+        firmwareManager = new FirmwareManager(networks, settings, driveCredentialStore, webView);
+        configureWebView(store, transfers, firmwareManager);
         connectButton.setOnClickListener(v -> toggleConnection());
         updateConnectionUi(networks.recorderNetwork(), networks.uploadNetwork());
     }
@@ -165,7 +170,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         root.requestApplyInsets();
     }
 
-    private void configureWebView(TransferStore store, TransferManager transfers) {
+    private void configureWebView(TransferStore store, TransferManager transfers,
+                                  FirmwareManager firmwareManager) {
         WebSettings webSettings = webView.getSettings();
         webSettings.setJavaScriptEnabled(true);
         webSettings.setDomStorageEnabled(true);
@@ -179,7 +185,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         webView.setWebViewClient(new BridgeWebViewClient(store, settings, debugBuild));
         webView.setWebChromeClient(createRecorderWebChromeClient());
         webView.setDownloadListener(this::onDownloadRequested);
-        webView.addJavascriptInterface(new RecorderJavascriptBridge(transfers, networks), "SLMAndroid");
+        webView.addJavascriptInterface(new RecorderJavascriptBridge(transfers, networks, firmwareManager), "SLMAndroid");
     }
 
     private WebChromeClient createRecorderWebChromeClient() {
@@ -350,6 +356,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         if (recorderScanPending || networks.recorderNetwork() != null
                 || recorderConnectionRequested || recorderReady) {
             recorderConnectionRequested = false;
+            showDisconnectedRecorder = false;
             cancelRecorderScan();
             resetRecorderProbe();
             networks.disconnectRecorder();
@@ -364,6 +371,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         cancelRecorderScan();
         resetRecorderProbe();
         recorderConnectionRequested = false;
+        showDisconnectedRecorder = false;
         recorderScanPending = true;
         recorderScanStartedMs = SystemClock.elapsedRealtime();
         final int generation = recorderScanGeneration.incrementAndGet();
@@ -457,6 +465,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         cancelRecorderScan();
         settings.selectRecorder(ssid);
         resetRecorderProbe();
+        showDisconnectedRecorder = false;
         recorderConnectionRequested = true;
         updateConnectionUi(null, networks.uploadNetwork());
         networks.connect(ssid, password);
@@ -548,6 +557,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         boolean beginProbe = false;
         synchronized (this) {
             if (recorder == null) {
+                if (recorderReady) showDisconnectedRecorder = true;
                 if (recorderProbeNetwork != null || recorderReady) {
                     recorderProbeGeneration.incrementAndGet();
                     stopRecorderHealthMonitor();
@@ -567,8 +577,10 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
     @Override public void onRecorderConnectionUnavailable() {
         runOnUiThread(() -> {
+            boolean wasRecorderReady = recorderReady;
             markRecorderUnavailable(settings.recorderSsid());
             recorderConnectionRequested = false;
+            showDisconnectedRecorder = wasRecorderReady;
             cancelRecorderScan();
             resetRecorderProbe();
             updateConnectionUi(networks.recorderNetwork(), networks.uploadNetwork());
@@ -599,12 +611,14 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 if (recorderAnswered) {
                     recorderReady = true;
                     recorderConnectionRequested = false;
+                    showDisconnectedRecorder = false;
                     startRecorderHealthMonitor(network);
                     updateConnectionUi(network, networks.uploadNetwork());
                     launchInterface();
                 } else {
                     recorderReady = false;
                     recorderConnectionRequested = false;
+                    showDisconnectedRecorder = false;
                     markRecorderUnavailable(settings.recorderSsid());
                     Toast.makeText(this,
                             "Recorder Wi-Fi connected, but the recorder did not answer. Check the recorder and try Connect again.",
@@ -672,6 +686,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         }
         recorderReady = false;
         recorderConnectionRequested = false;
+        showDisconnectedRecorder = true;
         markRecorderUnavailable(settings.recorderSsid());
         stopRecorderHealthMonitor();
         Toast.makeText(this, "Recorder connection lost. Check that recorder Wi-Fi is on, then press Connect.",
@@ -693,7 +708,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         if (hasRecorderConnectionPermission()) {
             beginRecorderScan();
         } else {
-            setBridgeTitle(null, false);
+            showDisconnectedRecorder = false;
+            setRecorderStatus(null, false, false);
             Toast.makeText(this, "Wi-Fi permission is required to connect to the recorder", Toast.LENGTH_LONG).show();
         }
     }
@@ -704,15 +720,17 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
         boolean recorderConnected = recorder != null;
         if (recorderScanPending) {
-            setBridgeTitle("Searching", true);
+            setRecorderStatus("Searching", true, false);
         } else if (recorderConnectionRequested) {
-            setBridgeTitle(settings.recorderSsid(), true);
+            setRecorderStatus(settings.recorderSsid(), true, false);
         } else if (recorderConnected && recorderReady) {
-            setBridgeTitle(settings.recorderSsid(), false);
+            setRecorderStatus(settings.recorderSsid(), false, true);
         } else if (recorderConnected) {
-            setBridgeTitle(settings.recorderSsid(), true);
+            setRecorderStatus(settings.recorderSsid(), true, false);
+        } else if (showDisconnectedRecorder) {
+            setRecorderStatus(settings.recorderSsid(), false, false);
         } else {
-            setBridgeTitle(null, false);
+            setRecorderStatus(null, false, false);
         }
 
         setButtonAvailable(connectButton, true);
@@ -732,65 +750,78 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
     private void updateServerUploadUi() {
         boolean serverConnected = latestUploadNetwork != null;
-        serverStatus.setText(serverConnected ? "Server Connected" : "Server Off-line");
+        serverStatus.setText(serverConnected ? "Server\nConnected" : "Server\nOff-line");
         serverStatus.setTextColor(serverConnected ? COLOR_GREEN : COLOR_AMBER);
 
         TransferManager.QueueStatus status = latestQueueStatus;
         if (status == null || status.isEmpty()) {
             fileQueueStatus.setText("File Queue Empty");
             fileQueueStatus.setTextColor(Color.BLACK);
+            fileTransferProgress.setVisibility(View.GONE);
+            fileTransferProgress.setProgress(0);
             return;
         }
 
         int total = Math.max(1, status.totalFiles);
         int current = Math.max(0, Math.min(status.currentFile, total));
         int percent = Math.max(0, Math.min(100, status.percent));
-        fileQueueStatus.setText("File Queue " + current + "/" + total + " (" + percent + "%)");
+        if (status.state == TransferManager.QueueStatus.UPLOADING) {
+            fileQueueStatus.setText("Transferring File (" + current + "/" + total + ")");
+            fileTransferProgress.setVisibility(View.VISIBLE);
+            fileTransferProgress.setProgress(percent);
+        } else {
+            fileQueueStatus.setText("File Queue " + total + "/" + total);
+            fileTransferProgress.setVisibility(View.GONE);
+            fileTransferProgress.setProgress(0);
+        }
         fileQueueStatus.setTextColor(Color.BLACK);
     }
 
-    private void setBridgeTitle(String recorderSsid, boolean connecting) {
-        String suffix;
+    private void setRecorderStatus(String recorderSsid, boolean connecting, boolean connected) {
+        String text;
+        int color;
         boolean blink;
         if ("Searching".equals(recorderSsid)) {
-            suffix = "Searching";
+            text = "Searching\nRecorder";
+            color = COLOR_AMBER;
             blink = true;
         } else {
             String registration = GliderRegistration.fromSsid(recorderSsid == null ? "" : recorderSsid);
+            String display = GliderRegistration.displayRegistration(registration);
             if (registration.isEmpty()) {
-                suffix = connecting ? "Connecting" : "Not Connected";
+                text = connecting ? "Connecting\nRecorder" : "No\nRecorder";
+            } else if (connected) {
+                text = display + "\nConnected";
+            } else if (connecting) {
+                text = "Connecting\n" + display;
             } else {
-                suffix = (connecting ? "Connecting " : "")
-                        + GliderRegistration.displayRegistration(registration);
+                text = display + "\nDisconnected";
             }
+            color = connected ? COLOR_GREEN : COLOR_AMBER;
             blink = connecting;
         }
-        bridgeTitleSuffix = suffix;
-        bridgeTitle.setBackgroundColor(Color.BLACK);
-        setTitleBlinking(blink);
+        recorderStatusText = text;
+        recorderStatusColor = color;
+        setRecorderStatusBlinking(blink);
     }
 
-    private void setTitleBlinking(boolean blink) {
-        if (blink != titleBlinking) {
-            titleBlinking = blink;
-            titleBlinkTextVisible = true;
+    private void setRecorderStatusBlinking(boolean blink) {
+        if (blink != recorderStatusBlinking) {
+            recorderStatusBlinking = blink;
+            recorderStatusTextVisible = true;
             mainHandler.removeCallbacks(titleBlinkRunnable);
             if (blink) mainHandler.postDelayed(titleBlinkRunnable, TITLE_BLINK_INTERVAL_MS);
         } else if (!blink) {
-            titleBlinkTextVisible = true;
+            recorderStatusTextVisible = true;
         }
-        renderBridgeTitle();
+        renderRecorderStatus();
     }
 
-    private void renderBridgeTitle() {
-        String title = BRIDGE_TITLE_PREFIX + bridgeTitleSuffix;
-        SpannableString styledTitle = new SpannableString(title);
-        styledTitle.setSpan(new ForegroundColorSpan(Color.WHITE), 0, BRIDGE_TITLE_PREFIX.length(),
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        int suffixColor = (!titleBlinking || titleBlinkTextVisible) ? Color.WHITE : COLOR_TITLE_BLINK_DIM;
-        styledTitle.setSpan(new ForegroundColorSpan(suffixColor), BRIDGE_TITLE_PREFIX.length(), title.length(),
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        bridgeTitle.setText(styledTitle);
+    private void renderRecorderStatus() {
+        recorderStatus.setText(recorderStatusText);
+        int color = (!recorderStatusBlinking || recorderStatusTextVisible)
+                ? recorderStatusColor : COLOR_STATUS_BLINK_DIM;
+        recorderStatus.setTextColor(color);
     }
 
     private static void setButtonAvailable(Button button, boolean available) {
@@ -842,8 +873,11 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         mainHandler.removeCallbacksAndMessages(null);
         recorderProbeExecutor.shutdownNow();
         TransferManager manager = transfers;
+        FirmwareManager firmware = firmwareManager;
         transfers = null;
+        firmwareManager = null;
         if (manager != null) manager.close();
+        if (firmware != null) firmware.close();
         networks.stop();
         fileExporter.close();
         if (pendingFileChooser != null) {
