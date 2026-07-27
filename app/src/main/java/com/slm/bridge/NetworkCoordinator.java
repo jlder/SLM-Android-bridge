@@ -18,6 +18,7 @@ final class NetworkCoordinator {
     private ConnectivityManager.NetworkCallback recorderCallback;
     private ConnectivityManager.NetworkCallback cellularCallback;
     private ConnectivityManager.NetworkCallback defaultInternetCallback;
+    private volatile int recorderRequestGeneration;
     private volatile Network recorderNetwork;
     private volatile Network cellularNetwork;
     private volatile Network defaultInternetNetwork;
@@ -40,6 +41,7 @@ final class NetworkCoordinator {
 
     void connect(String ssid, String password) {
         disconnectRecorder();
+        final int requestGeneration = ++recorderRequestGeneration;
         ensureCellularRequest();
 
         WifiNetworkSpecifier.Builder wifi = new WifiNetworkSpecifier.Builder().setSsid(ssid);
@@ -52,6 +54,7 @@ final class NetworkCoordinator {
 
         recorderCallback = new ConnectivityManager.NetworkCallback() {
             @Override public void onAvailable(Network network) {
+                if (requestGeneration != recorderRequestGeneration) return;
                 recorderNetwork = network;
                 // WebView does not expose an API for selecting a Network. Bind the
                 // process to the recorder Wi-Fi so its UI loads from the recorder;
@@ -60,6 +63,7 @@ final class NetworkCoordinator {
                 notifyListener();
             }
             @Override public void onLost(Network network) {
+                if (requestGeneration != recorderRequestGeneration) return;
                 if (network.equals(recorderNetwork)) {
                     recorderNetwork = null;
                     connectivity.bindProcessToNetwork(null);
@@ -71,6 +75,7 @@ final class NetworkCoordinator {
                 notifyListener();
             }
             @Override public void onUnavailable() {
+                if (requestGeneration != recorderRequestGeneration) return;
                 recorderNetwork = null;
                 connectivity.bindProcessToNetwork(null);
                 releaseCellularRequest();
@@ -80,11 +85,13 @@ final class NetworkCoordinator {
         };
         // Android may need time for the user to confirm the recorder network
         // and for the phone to finish switching away from its normal Wi-Fi.
-        connectivity.requestNetwork(recorderRequest, recorderCallback, 60_000);
+        // Keep the timeout short enough that a stopped recorder returns promptly.
+        connectivity.requestNetwork(recorderRequest, recorderCallback, 30_000);
 
     }
 
     void disconnectRecorder() {
+        recorderRequestGeneration++;
         if (recorderCallback != null) {
             try { connectivity.unregisterNetworkCallback(recorderCallback); } catch (RuntimeException ignored) {}
         }

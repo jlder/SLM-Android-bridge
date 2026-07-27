@@ -29,8 +29,23 @@ Android supplies network routing, durable storage, and cellular upload.
   SSID.
 - SHA-256 duplicate detection before Drive upload.
 - Progress/completion events returned to the recorder Web application.
-- Configurable recorder SSID/password/address. No server URL or bearer-token field
-  is needed for the direct Drive demonstrator.
+- Automatic recorder discovery: **CONNECT** scans for Wi-Fi names matching
+  `SLM-` plus five uppercase alphanumeric characters, for example `SLM-FCJAF`.
+  The WPA2 password is generated as `SLM` plus the reversed five-character
+  registration, for example `SLMFAJCF`. No recorder SSID/password setup menu is
+  required.
+- Simplified bridge header: black title bar with white `SLM BRIDGE - ...` text,
+  one centered blue **CONNECT/STOP** button, and a two-field server-upload
+  status line below the button.
+- Connection-state feedback in the title bar: the fixed `SLM BRIDGE -` prefix remains steady while only `Searching` blinks when Android
+  is refreshing Wi-Fi scan results, and only `Connecting F-CJAF` blinks after a recorder
+  SSID is selected and the bridge is joining/probing it, and `F-CJAF` is steady
+  after the recorder answers.
+- Periodic recorder health checks after connection. If the recorder Wi-Fi or Web
+  service disappears, the bridge disconnects, clears the WebView, and returns to
+  `Not Connected`.
+- Server-upload status is split into `Server Off-line` / `Server Connected` on
+  the left and `File Queue Empty` or `File Queue x/y (z%)` on the right.
 
 ## Status
 
@@ -45,15 +60,24 @@ end-to-end testing with the recorder endpoint and target Drive account.
 2. Open this directory.
 3. Let Android Studio create/use a Gradle wrapper if prompted and sync.
 4. Connect an Android 10+ phone and run the `app` configuration.
-5. Open **CONF** and enter the recorder details. The recorder SSID must contain the
-   glider registration, for example `SLM-F-ABCD`.
-6. Select **CONNECT** and approve Android's recorder Wi-Fi request.
-7. Once the recorder status is connected, select **LAUNCH**.
+5. Select **CONNECT**. The app scans for recorder Wi-Fi names matching
+   `SLM-` followed by five uppercase alphanumeric characters, for example
+   `SLM-FCJAF`.
+6. If several matching recorders are visible, select the recorder to use.
+7. Approve Android's recorder Wi-Fi request. When the recorder answers, the app
+   opens the recorder Web interface automatically.
 
-The app deliberately remains disconnected on startup. Saving configuration also
-leaves it disconnected, so configuration, network connection, and recorder UI
-launch are separate user actions. The three controls share one compact row. After
-connection, **CONNECT** becomes **STOP**; while searching, it becomes **CANCEL**.
+The app deliberately remains disconnected on startup. **CONNECT** performs recorder
+discovery and connection in one operator action. Before **CONNECT** is pressed, the
+title is `SLM BRIDGE - Not Connected`. After **CONNECT**, the title becomes
+`SLM BRIDGE - Searching` while Android is asked to refresh Wi-Fi scan results.
+Only `Searching` blinks to show that discovery is in progress; the `SLM BRIDGE -` prefix stays fixed. After a recorder SSID
+is selected, only the `Connecting F-CJAF` suffix blinks
+text while Android associates with the recorder and the bridge waits
+for `/api/status`. When the recorder answers, the app opens the recorder interface
+automatically and the title becomes `SLM BRIDGE - F-CJAF`. If the recorder
+disappears after connection, periodic health checks return the bridge to
+`SLM BRIDGE - Not Connected` and clear the stale WebView page.
 
 Recorder transfers are streamed into app-private phone storage and recorded in a
 durable queue before upload. When cellular data is ready, the app refreshes a
@@ -80,7 +104,6 @@ Before a production release:
   default is cleartext `http://192.168.4.1`.
 - Replace the globally enabled cleartext manifest policy with a narrowly scoped
   recorder policy, or remove cleartext support after recorder HTTPS is available.
-- Encrypt the saved recorder Wi-Fi password using Android Keystore.
 - Replace the recorder-distributed shared OAuth refresh authorization with device
   enrollment and short-lived, narrowly scoped credentials.
 - Replace `addJavascriptInterface` with an origin-scoped WebMessage channel, and
@@ -149,3 +172,12 @@ SLMAndroid.deleteStoredFile(transferId)
 Progress arrives as `slm-transfer-event`. States are `download-started`,
 `downloading`, `download-complete`, `upload-pending`, `upload-started`, `uploading`,
 `upload-complete`, and `failed`.
+
+
+Wi-Fi discovery first requests a fresh Android scan and waits for `SCAN_RESULTS_AVAILABLE_ACTION`. When Android reports fresh results, only fresh recorder SSIDs are offered. If Android throttles the scan, the bridge can fall back to recent cached results, but SSIDs that just failed to connect are temporarily suppressed so a stopped recorder is not immediately offered again from stale scan data. Version 0.3.10 keeps the `SLM BRIDGE -` title prefix steady and blinks only the active `Searching` or `Connecting ...` suffix. Version 0.3.9 splits server-upload status into server availability and queue progress.
+
+Version 0.3.11 reduces the Android recorder Wi-Fi connection timeout from 60 s to 30 s so a stopped or unavailable recorder returns to `Not Connected` more quickly.
+
+Version 0.3.12 adds the SLM Bridge launcher icon and sets the Android launcher label to `SLM Bridge`.
+
+Version 0.3.13 reduces the launcher-icon artwork inside the adaptive-icon safe area so the home-screen icon is not cropped by Android launcher masks.

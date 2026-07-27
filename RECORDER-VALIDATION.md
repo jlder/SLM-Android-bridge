@@ -5,13 +5,30 @@ copy of important recorder data.
 
 ## Connection and interface
 
-- Start the app: it must remain disconnected.
-- In **CONF**, confirm the registration shown by the app matches the registration
-  embedded in the recorder SSID (for example `SLM-F-ABCD` becomes `F-ABCD`).
-- Select **Connect** and accept Android's Wi-Fi request if shown.
-- Confirm `Recorder: connected`.
-- Select **Launch interface** and confirm the recorder home page loads.
-- Select **Disconnect** and confirm the interface closes.
+- Start the app: it must remain disconnected and the title must read
+  `SLM BRIDGE - Not Connected`.
+- Switch the recorder Wi-Fi on and confirm that the recorder SSID is visible as
+  `SLM-` plus five uppercase alphanumeric characters, for example `SLM-FCJAF`.
+- Select **CONNECT** and confirm the title changes to `SLM BRIDGE - Searching` while the app scans, with only `Searching` blinking. If several matching SLM recorders are visible, select the
+  recorder under test from the list.
+- Accept Android's Wi-Fi request if shown.
+- Confirm the title becomes `SLM BRIDGE - Connecting F-CJAF`, with only `Connecting F-CJAF` blinking
+  while Android connects and the bridge waits for `/api/status`.
+- Confirm the title then becomes `SLM BRIDGE - F-CJAF` style text and the recorder
+  home page opens automatically.
+- Confirm there is no **RELOAD** or **CONF** button in the bridge header.
+- Confirm the server-upload status is displayed below the centered **CONNECT/STOP**
+  button as two fields on a white background: left `Server Off-line` in amber or
+  `Server Connected` in green, right `File Queue Empty` or `File Queue x/y (z%)`.
+- Select **STOP** and confirm the interface closes. Press **CONNECT** again and
+  confirm a new scan/connection attempt starts.
+- With the bridge connected, stop recorder Wi-Fi. Confirm that the bridge reports
+  the lost recorder connection, clears the recorder WebView, and returns to
+  `SLM BRIDGE - Not Connected`.
+- With recorder Wi-Fi stopped, press **CONNECT** again and confirm that a fresh
+  scan does not offer the stopped recorder. If Android returns cached scan results
+  and the stopped recorder is selected, confirm that after connection failure the
+  same SSID is temporarily suppressed on the next **CONNECT**.
 
 ## Configuration and calibration
 
@@ -79,3 +96,11 @@ copy of important recorder data.
 For any failure, open Android Studio **Logcat**, select the phone and the app, and
 filter for `SLM-Web`. Record the button pressed, visible message, and the matching
 console/HTTP error. Debug logging is compiled out of release builds.
+
+- Confirm that `CONNECT` uses fresh Android scan results when available, while still detecting a visible SLM recorder through recent cached results if Android throttles the app-initiated scan.
+
+Additional validation for 0.3.11: with a stale recorder SSID selected, the bridge should leave `Connecting ...` and return to `Not Connected` after about 30 s, not 60 s.
+
+Additional validation for 0.3.12: after installing the APK, confirm that Android shows the SLM Bridge launcher icon and the app label `SLM Bridge`.
+
+Additional validation for 0.3.13: after installing the APK, confirm that the launcher icon is no longer cropped by the Android home-screen mask.

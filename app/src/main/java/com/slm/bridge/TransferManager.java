@@ -32,11 +32,23 @@ final class TransferManager {
 
         final String text;
         final int state;
+        final int currentFile;
+        final int totalFiles;
+        final int percent;
 
         QueueStatus(String text, int state) {
+            this(text, state, 0, 0, 0);
+        }
+
+        QueueStatus(String text, int state, int currentFile, int totalFiles, int percent) {
             this.text = text;
             this.state = state;
+            this.currentFile = currentFile;
+            this.totalFiles = totalFiles;
+            this.percent = percent;
         }
+
+        boolean isEmpty() { return state == IDLE || totalFiles <= 0; }
     }
 
     private final NetworkCoordinator networks;
@@ -448,9 +460,11 @@ final class TransferManager {
     }
 
     private void publishUploading(int percent) {
+        int safePercent = Math.max(0, Math.min(100, percent));
         publish(new QueueStatus("SERVER UPLOAD: Uploading " + activeUploadPosition
                 + " of " + activeUploadTotal
-                + " \u2014 " + Math.max(0, Math.min(100, percent)) + "%", QueueStatus.UPLOADING));
+                + " \u2014 " + safePercent + "%", QueueStatus.UPLOADING,
+                activeUploadPosition, activeUploadTotal, safePercent));
     }
 
     private void beginUploadBatchItem() {
@@ -474,19 +488,19 @@ final class TransferManager {
     private void publishQueueSnapshot(String error) {
         int count = store.pendingUploads().size();
         if (count == 0) {
-            publish(new QueueStatus("SERVER UPLOAD: Queue empty", QueueStatus.IDLE));
+            publish(new QueueStatus("SERVER UPLOAD: Queue empty", QueueStatus.IDLE, 0, 0, 0));
             return;
         }
         String files = count == 1 ? "file" : "files";
         if (networks.uploadNetwork() == null) {
             publish(new QueueStatus("SERVER UPLOAD: " + count + " " + files
-                    + " waiting for Internet", QueueStatus.WAITING));
+                    + " waiting for Internet", QueueStatus.WAITING, 0, count, 0));
         } else if (error != null && !error.isEmpty()) {
             publish(new QueueStatus("SERVER UPLOAD: " + count + " " + files
-                    + " queued \u2014 retry pending", QueueStatus.WAITING));
+                    + " queued \u2014 retry pending", QueueStatus.WAITING, 0, count, 0));
         } else {
             publish(new QueueStatus("SERVER UPLOAD: " + count + " " + files
-                    + " queued", QueueStatus.WAITING));
+                    + " queued", QueueStatus.WAITING, 0, count, 0));
         }
     }
 
