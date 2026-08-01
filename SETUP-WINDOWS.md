@@ -11,11 +11,11 @@ For actual recorder Wi-Fi plus cellular-routing tests, use an Android 10 or newe
 
 On first launch, grant the nearby Wi-Fi and location permissions used for recorder discovery.
 No recorder connection settings are entered manually. Select **CONNECT** and the app requests
-an Android scan for recorder Wi-Fi names matching `SLM-` plus five uppercase alphanumeric
-characters, for example `SLM-FCJAF`. The left recorder-status field shows `No / Recorder` before **CONNECT**, blinking `Searching / Recorder` while Android refreshes Wi-Fi scan results, blinking `Connecting / F-CJAF` while Android joins/probes the selected recorder, and `F-CJAF / Connected` once the recorder answers. If several
+an Android scan for recorder Wi-Fi names matching `SLM2-` plus five uppercase alphanumeric
+characters, for example `SLM2-FCJAF`. The left recorder-status field shows `No / Recorder` before **CONNECT**, blinking `Searching / Recorder` while Android refreshes Wi-Fi scan results, blinking `Connecting / F-CJAF` while Android joins/probes the selected recorder, and `F-CJAF / Connected` once the recorder answers. If several
 recorders are visible, select the recorder to use. The Wi-Fi password is generated
 automatically as `SLM` plus the reversed five-character registration from the SSID, for
-example `SLM-FCJAF` -> `SLMFAJCF`. The bridge header has no **CONF** or **RELOAD** button; it
+example `SLM2-FCJAF` -> `SLMFAJCF`. The bridge header has no **CONF** or **RELOAD** button; it
 shows a recorder-style black header with centered recorder status on the left, fixed two-line `SLM / BRIDGE` title in the center, centered server status on the right, one centered blue **CONNECT/STOP** button, and a compact file-queue/progress line below the button. The bridge periodically checks the recorder after
 connection and shows the recorder as disconnected if it stops answering.
 Server status and Drive uploads use an explicitly selected validated Internet
@@ -39,7 +39,7 @@ After using Android Studio **Generate Signed Bundle / APK**, the signed APK may 
 For release 0.3.14, verify on a physical phone that connecting to recorder Wi-Fi does not make the server status temporarily fall to `Server Off-line` when mobile data or another validated Internet network is available.
 
 
-For release 0.3.25, rebuild the signed APK and check the recorder Firmware page on a physical phone. The APK produced by Android Studio may be under `app\release\app-release.apk` or `app\build\outputs\apk\release\app-release.apk`; use the Android Studio locate link to confirm.
+For release 0.3.26, rebuild the signed APK and check the recorder Firmware page on a physical phone. The APK produced by Android Studio may be under `app\release\app-release.apk` or `app\build\outputs\apk\release\app-release.apk`; use the Android Studio locate link to confirm.
 
 ## 0.3.22 upload and queue check
 

@@ -160,11 +160,26 @@ final class TransferManager {
                 TransferStore.Item item = store.get(transferId);
                 if (item == null) return;
                 store.markAnalysisComplete(item);
+                requestUploadRetry();
                 schedulePendingArchives();
             } catch (Exception e) {
                 emit(null, "archive-pending", 0, message(e));
             }
         });
+    }
+
+    void markAnalysisFailed(String transferId) {
+        downloadExecutor.execute(() -> {
+            store.delete(transferId);
+            publishQueueSnapshot(null);
+            clearCredentialsWhenIdle();
+        });
+    }
+
+    String recorderTransferStates() {
+        String registration = settings.gliderRegistration();
+        if (registration.isEmpty()) return "{\"files\":[]}";
+        return store.recorderTransferStates(registration);
     }
 
     void close() {
@@ -192,10 +207,6 @@ final class TransferManager {
             store.markDownloaded(item, sha256);
             emit(item, "download-complete", 100, null);
             publishQueueSnapshot(null);
-            if (upload) {
-                TransferStore.Item downloaded = item;
-                uploadExecutor.execute(() -> uploadOrQueue(downloaded));
-            }
         } catch (Exception e) {
             if (item != null && !item.downloadComplete) store.delete(item.id);
             emit(item, "failed", 0, message(e));

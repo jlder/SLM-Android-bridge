@@ -57,8 +57,8 @@ end-to-end testing with the recorder endpoint and target Drive account.
 3. Let Android Studio create/use a Gradle wrapper if prompted and sync.
 4. Connect an Android 10+ phone and run the `app` configuration.
 5. Select **CONNECT**. The app scans for recorder Wi-Fi names matching
-   `SLM-` followed by five uppercase alphanumeric characters, for example
-   `SLM-FCJAF`.
+   `SLM2-` followed by five uppercase alphanumeric characters, for example
+   `SLM2-FCJAF`.
 6. If several matching recorders are visible, select the recorder to use.
 7. Approve Android's recorder Wi-Fi request. When the recorder answers, the app
    opens the recorder Web interface automatically.
@@ -196,3 +196,16 @@ Firmware lookup first checks the connected recorder's Drive folder, `<registrati
 The bridge searches recorder-specific firmware folders using both the canonical registration folder name (for example `F-CJAF/FIRMWARE`) and the compact five-character recorder registration folder name (for example `FCJAF/FIRMWARE`) before falling back to `SLM-STC-DATA/FIRMWARE`. Folder-name matching for `FIRMWARE` is case-insensitive. Firmware `.bin` files up to 32 MiB are accepted; the recorder OTA endpoint remains the final authority for whether the image fits the device.
 
 Server firmware files are expected to be staged manually in Google Drive. The recorder Drive authorization must therefore be generated with firmware read access (`drive.readonly`) in addition to the existing app-file upload access (`drive.file`). If a firmware `.bin` is visible in the Google Drive browser but not in SLM Bridge, regenerate the OAuth credential with `tools/oauth-bootstrap.ps1`, export the recorder Drive configuration again, and reprovision/rebuild the recorder.
+
+### Recorder Process lock in 0.3.28
+
+Version 0.3.28 exposes durable recorder-transfer states to the recorder Web page and rejects a second request for the same registration and filename. Recorder uploads now become eligible only after browser analysis reports success. A failed analysis removes the incomplete transfer, allowing the blue **Process** action to be used again. Pending or retrying uploads remain locked across WebView refreshes, app reconnection, and application restart until automatic recorder archive succeeds.
+
+### Android system-navigation clearance in 0.3.29
+
+Version 0.3.29 applies the Android system-bar insets to the Bridge root layout. The usable content area now excludes both the normal system bars and the bottom tappable navigation area, so the Bridge does not cover the Android three-button navigation controls. Gesture-navigation layouts remain unchanged apart from the inset reported by Android.
+
+### Version 0.3.30
+
+- User-action and error messages now use persistent, wrapped dialogs with an OK button instead of short-lived large Toast messages. Brief progress confirmations such as Connecting and Saving remain transient.
+- Recorder web UI integration supports the recorder-side global Process-button lock during Downloading and Analyzing.

@@ -19,7 +19,7 @@ public final class RecorderJavascriptBridge {
     @JavascriptInterface public String getCapabilities() {
         try {
             JSONObject result = new JSONObject();
-            result.put("bridgeVersion", 3);
+            result.put("bridgeVersion", 4);
             result.put("features", new JSONArray()
                     .put("recorder-download")
                     .put("local-file-access")
@@ -31,13 +31,14 @@ public final class RecorderJavascriptBridge {
                     .put("calibration-report-upload")
                     .put("ssid-registration")
                     .put("transfer-progress")
+                    .put("recorder-process-lock")
                     .put("server-firmware"));
             result.put("recorderConnected", networks.recorderNetwork() != null);
             result.put("cellularConnected", networks.cellularNetwork() != null);
             result.put("internetConnected", networks.uploadNetwork() != null);
             return result.toString();
         } catch (Exception e) {
-            return "{\"bridgeVersion\":3,\"features\":[]}";
+            return "{\"bridgeVersion\":4,\"features\":[]}";
         }
     }
 
@@ -55,6 +56,14 @@ public final class RecorderJavascriptBridge {
 
     @JavascriptInterface public void analysisComplete(String transferId) {
         transfers.markAnalysisComplete(transferId);
+    }
+
+    @JavascriptInterface public void analysisFailed(String transferId) {
+        transfers.markAnalysisFailed(transferId);
+    }
+
+    @JavascriptInterface public String getRecorderTransferStates() {
+        return transfers.recorderTransferStates();
     }
 
     @JavascriptInterface public void listServerFirmware() {

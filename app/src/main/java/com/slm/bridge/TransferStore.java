@@ -2,6 +2,7 @@ package com.slm.bridge;
 
 import android.content.Context;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -70,6 +71,14 @@ final class TransferStore {
     }
 
     synchronized Item create(String filename, String registration, boolean uploadRequested) throws Exception {
+        for (Item existing : items.values()) {
+            if (existing.driveSubfolder.isEmpty()
+                    && existing.registration.equals(registration)
+                    && existing.filename.equals(filename)
+                    && !existing.archived) {
+                throw new IllegalStateException("File is already being processed");
+            }
+        }
         String id = UUID.randomUUID().toString();
         Item item = new Item(id, filename, dataFile(id), registration, "",
                 uploadRequested, false, false, uploadRequested, false, false,
@@ -123,7 +132,8 @@ final class TransferStore {
     synchronized List<Item> pendingUploads() {
         List<Item> result = new ArrayList<>();
         for (Item item : items.values()) {
-            if (item.uploadRequested && item.downloadComplete && !item.uploaded && item.file.isFile()) {
+            if (item.uploadRequested && item.downloadComplete && item.analysisComplete
+                    && !item.uploaded && item.file.isFile()) {
                 result.add(item);
             }
         }
@@ -141,6 +151,33 @@ final class TransferStore {
             }
         }
         return result;
+    }
+
+
+    synchronized String recorderTransferStates(String registration) {
+        JSONArray files = new JSONArray();
+        try {
+            for (Item item : items.values()) {
+                if (!item.driveSubfolder.isEmpty() || item.archived
+                        || !item.registration.equals(registration)) continue;
+                String state;
+                if (!item.downloadComplete) state = "downloading";
+                else if (!item.analysisComplete) state = "analyzing";
+                else if (!item.uploaded) state = "queued";
+                else state = "finalizing";
+
+                JSONObject file = new JSONObject();
+                file.put("filename", item.filename);
+                file.put("state", state);
+                files.put(file);
+            }
+
+            JSONObject result = new JSONObject();
+            result.put("files", files);
+            return result.toString();
+        } catch (Exception ignored) {
+            return "{\"files\":[]}";
+        }
     }
 
     synchronized void delete(String id) {

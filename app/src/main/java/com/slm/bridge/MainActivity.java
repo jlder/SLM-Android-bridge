@@ -118,7 +118,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        applySystemBarInsets(findViewById(android.R.id.content));
+        applySystemBarInsets(findViewById(R.id.bridgeRoot));
         settings = new AppSettings(this);
         debugBuild = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         webView = findViewById(R.id.webView);
@@ -153,10 +153,11 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             int insetBottom;
             if (Build.VERSION.SDK_INT >= 30) {
                 Insets systemBars = windowInsets.getInsets(WindowInsets.Type.systemBars());
-                insetLeft = systemBars.left;
-                insetTop = systemBars.top;
-                insetRight = systemBars.right;
-                insetBottom = systemBars.bottom;
+                Insets tappableElement = windowInsets.getInsets(WindowInsets.Type.tappableElement());
+                insetLeft = Math.max(systemBars.left, tappableElement.left);
+                insetTop = Math.max(systemBars.top, tappableElement.top);
+                insetRight = Math.max(systemBars.right, tappableElement.right);
+                insetBottom = Math.max(systemBars.bottom, tappableElement.bottom);
             } else {
                 insetLeft = windowInsets.getSystemWindowInsetLeft();
                 insetTop = windowInsets.getSystemWindowInsetTop();
@@ -223,7 +224,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 } catch (ActivityNotFoundException e) {
                     pendingFileChooser = null;
                     filePathCallback.onReceiveValue(null);
-                    Toast.makeText(MainActivity.this, "No file picker is available", Toast.LENGTH_LONG).show();
+                    showMessageDialog("File selection unavailable", "No file picker is available on this phone.");
                 }
                 return true;
             }
@@ -245,7 +246,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             return;
         }
         if (networks.recorderNetwork() == null) {
-            Toast.makeText(this, "Connect to the recorder before downloading", Toast.LENGTH_LONG).show();
+            showMessageDialog("Recorder not connected", "Connect to the recorder before downloading a file.");
             return;
         }
         String safeMimeType = mimeType == null || mimeType.trim().isEmpty()
@@ -265,7 +266,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                         + ", page=" + webView.getUrl()
                         + ", expectedOrigin=" + RecorderUrlPolicy.origin(settings.recorderBaseUrl()));
             }
-            Toast.makeText(this, "Blocked a download outside the recorder", Toast.LENGTH_LONG).show();
+            showMessageDialog("Download blocked", "The requested download did not come from the connected recorder.");
             return;
         } else {
             String recorderFilename = RecorderUrlPolicy.filenameFromDownloadUrl(resolvedUrl);
@@ -287,7 +288,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             startActivityForResult(destination, CREATE_DOCUMENT_REQUEST);
         } catch (ActivityNotFoundException e) {
             pendingDownload = null;
-            Toast.makeText(this, "No document application is available", Toast.LENGTH_LONG).show();
+            showMessageDialog("File save unavailable", "No document application is available to save this file.");
         }
     }
 
@@ -315,11 +316,22 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 && RecorderUrlPolicy.isCalibrationReportDownload(request.url);
         TransferManager manager = transfers;
         if (calibrationReport && manager != null) manager.enqueueReport(request);
-        String message = error == null
-                ? request.filename + (calibrationReport
-                        ? " saved and queued for SLM server" : " saved")
-                : "Download failed: " + error;
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        if (error == null) {
+            String message = request.filename + (calibrationReport
+                    ? " saved and queued for SLM server" : " saved");
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+        } else {
+            showMessageDialog("Download failed", error);
+        }
+    }
+
+    private void showMessageDialog(String title, String message) {
+        if (isFinishing() || isDestroyed()) return;
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(message)
+                .setPositiveButton("OK", null)
+                .show();
     }
 
     private static String sanitizeFilename(String value) {
@@ -383,8 +395,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             if (wifi == null) {
                 recorderScanPending = false;
                 updateConnectionUi(null, networks.uploadNetwork());
-                Toast.makeText(this, "Wi-Fi manager is not available on this phone",
-                        Toast.LENGTH_LONG).show();
+                showMessageDialog("Wi-Fi unavailable", "Wi-Fi management is not available on this phone.");
                 return;
             }
             registerRecorderScanReceiver(generation);
@@ -396,8 +407,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             recorderScanPending = false;
             unregisterRecorderScanReceiver();
             updateConnectionUi(null, networks.uploadNetwork());
-            Toast.makeText(this, "Wi-Fi scan permission is required to find SLM recorders",
-                    Toast.LENGTH_LONG).show();
+            showMessageDialog("Wi-Fi permission required",
+                    "Allow Wi-Fi scanning permission so SLM Bridge can find recorders.");
         }
     }
 
@@ -434,19 +445,91 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         List<DiscoveredRecorder> recorders = scanSlmRecorders(!freshResultsAvailable);
         if (recorders.isEmpty()) {
             updateConnectionUi(null, networks.uploadNetwork());
-            Toast.makeText(this,
+            showMessageDialog("Recorder not found",
                     freshResultsAvailable
-                            ? "No SLM recorder Wi-Fi found. Check that recorder Wi-Fi is on, then try Connect again."
-                            : "No fresh SLM recorder Wi-Fi scan was available. Check that recorder Wi-Fi is on, then try Connect again.",
-                    Toast.LENGTH_LONG).show();
+                            ? "No SLM recorder Wi-Fi was found. Check that recorder Wi-Fi is on, then try Connect again."
+                            : "No fresh SLM recorder Wi-Fi scan was available. Check that recorder Wi-Fi is on, then try Connect again.");
             return;
         }
-        if (recorders.size() == 1) {
-            connectToRecorder(recorders.get(0).ssid);
+        ArrayList<DiscoveredRecorder> supportedRecorders = new ArrayList<>();
+        for (DiscoveredRecorder recorder : recorders) {
+            if (GliderRegistration.isSupportedRecorderSsid(recorder.ssid)) {
+                supportedRecorders.add(recorder);
+            }
+        }
+        if (supportedRecorders.isEmpty()) {
+            updateConnectionUi(null, networks.uploadNetwork());
+            showWifiGenerationConflict(recorders);
+            return;
+        }
+        if (supportedRecorders.size() == 1) {
+            connectToRecorder(supportedRecorders.get(0).ssid);
             return;
         }
         updateConnectionUi(null, networks.uploadNetwork());
-        showRecorderSelection(recorders);
+        showRecorderSelection(supportedRecorders);
+    }
+
+
+    private void showWifiGenerationConflict(List<DiscoveredRecorder> recorders) {
+        ArrayList<DiscoveredRecorder> incompatible = new ArrayList<>();
+        for (DiscoveredRecorder recorder : recorders) {
+            int generation = GliderRegistration.wifiGenerationFromSsid(recorder.ssid);
+            if (generation > 0 && generation != GliderRegistration.SUPPORTED_WIFI_GENERATION) {
+                incompatible.add(recorder);
+            }
+        }
+
+        if (incompatible.size() == 1) {
+            DiscoveredRecorder recorder = incompatible.get(0);
+            showWifiGenerationConflictFor(
+                    GliderRegistration.wifiGenerationFromSsid(recorder.ssid), recorder.ssid);
+            return;
+        }
+
+        StringBuilder registrations = new StringBuilder();
+        for (DiscoveredRecorder recorder : incompatible) {
+            String registration = recorderDisplayRegistration(recorder.ssid);
+            if (registration.isEmpty()) continue;
+            if (registrations.length() > 0) registrations.append("\n");
+            registrations.append("• ").append(registration);
+        }
+
+        String message = "Incompatible SLM Wi-Fi generations were found.";
+        if (registrations.length() > 0) {
+            message += "\n\nRecorders:\n" + registrations;
+        }
+        message += "\n\nUpdate the recorder firmware and SLM Bridge before connecting.";
+
+        showMessageDialog("Wi-Fi version conflict", message);
+    }
+
+    private void showWifiGenerationConflictFor(int generation) {
+        showWifiGenerationConflictFor(generation, null);
+    }
+
+    private void showWifiGenerationConflictFor(int generation, String ssid) {
+        String registration = recorderDisplayRegistration(ssid);
+        String recorderName = registration.isEmpty() ? "This recorder" : "Recorder " + registration;
+        final String title;
+        final String message;
+        if (generation > GliderRegistration.SUPPORTED_WIFI_GENERATION) {
+            title = "SLM Bridge update required";
+            message = recorderName
+                    + " uses a newer Wi-Fi connection generation.\n\nUpdate SLM Bridge before connecting.";
+        } else if (generation > 0) {
+            title = "Recorder update required";
+            message = recorderName
+                    + " uses an older Wi-Fi connection generation.\n\nUpdate the recorder firmware before connecting.";
+        } else {
+            title = "Invalid recorder Wi-Fi";
+            message = "The detected SLM recorder Wi-Fi name is invalid.";
+        }
+        showMessageDialog(title, message);
+    }
+
+    private static String recorderDisplayRegistration(String ssid) {
+        return GliderRegistration.displayRegistration(GliderRegistration.fromSsid(ssid));
     }
 
     private void cancelRecorderScan() {
@@ -456,10 +539,15 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     }
 
     private void connectToRecorder(String ssid) {
+        int generation = GliderRegistration.wifiGenerationFromSsid(ssid);
+        if (generation != GliderRegistration.SUPPORTED_WIFI_GENERATION) {
+            showWifiGenerationConflictFor(generation);
+            return;
+        }
         String password = GliderRegistration.wifiPasswordFromSsid(ssid);
         if (password.isEmpty()) {
-            Toast.makeText(this, "Invalid SLM recorder Wi-Fi name: " + ssid,
-                    Toast.LENGTH_LONG).show();
+            showMessageDialog("Invalid recorder Wi-Fi",
+                    "The detected recorder Wi-Fi name is invalid: " + ssid);
             return;
         }
         cancelRecorderScan();
@@ -495,8 +583,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 }
             }
         } catch (SecurityException security) {
-            Toast.makeText(this, "Wi-Fi scan permission is required to find SLM recorders",
-                    Toast.LENGTH_LONG).show();
+            showMessageDialog("Wi-Fi permission required",
+                    "Allow Wi-Fi scanning permission so SLM Bridge can find recorders.");
         } catch (RuntimeException ignored) {
             // Use an empty result and let the normal user message explain that no recorder was found.
         }
@@ -537,10 +625,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private void showRecorderSelection(List<DiscoveredRecorder> recorders) {
         String[] items = new String[recorders.size()];
         for (int index = 0; index < recorders.size(); index++) {
-            DiscoveredRecorder recorder = recorders.get(index);
-            String registration = GliderRegistration.fromSsid(recorder.ssid);
-            items[index] = String.format(Locale.ROOT, "%s  %s  %d dBm",
-                    recorder.ssid, registration, recorder.level);
+            items[index] = recorderDisplayRegistration(recorders.get(index).ssid);
         }
         new AlertDialog.Builder(this)
                 .setTitle("Select SLM recorder")
@@ -584,8 +669,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             cancelRecorderScan();
             resetRecorderProbe();
             updateConnectionUi(networks.recorderNetwork(), networks.uploadNetwork());
-            Toast.makeText(this, "The selected SLM recorder was not found. Check that its Wi-Fi is on, then try Connect again.",
-                    Toast.LENGTH_LONG).show();
+            showMessageDialog("Recorder not found",
+                    "The selected SLM recorder was not found. Check that its Wi-Fi is on, then try Connect again.");
         });
     }
 
@@ -620,9 +705,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                     recorderConnectionRequested = false;
                     showDisconnectedRecorder = false;
                     markRecorderUnavailable(settings.recorderSsid());
-                    Toast.makeText(this,
-                            "Recorder Wi-Fi connected, but the recorder did not answer. Check the recorder and try Connect again.",
-                            Toast.LENGTH_LONG).show();
+                    showMessageDialog("Recorder not responding",
+                            "Recorder Wi-Fi connected, but the recorder did not answer. Check the recorder and try Connect again.");
                     networks.disconnectRecorder();
                 }
             });
@@ -689,8 +773,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         showDisconnectedRecorder = true;
         markRecorderUnavailable(settings.recorderSsid());
         stopRecorderHealthMonitor();
-        Toast.makeText(this, "Recorder connection lost. Check that recorder Wi-Fi is on, then press Connect.",
-                Toast.LENGTH_LONG).show();
+        showMessageDialog("Recorder disconnected",
+                "Recorder connection lost. Check that recorder Wi-Fi is on, then press Connect.");
         networks.disconnectRecorder();
         updateConnectionUi(null, networks.uploadNetwork());
     }
@@ -710,7 +794,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         } else {
             showDisconnectedRecorder = false;
             setRecorderStatus(null, false, false);
-            Toast.makeText(this, "Wi-Fi permission is required to connect to the recorder", Toast.LENGTH_LONG).show();
+            showMessageDialog("Wi-Fi permission required",
+                    "Allow Wi-Fi permission so SLM Bridge can connect to the recorder.");
         }
     }
 

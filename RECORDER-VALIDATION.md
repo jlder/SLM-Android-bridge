@@ -135,3 +135,26 @@ Download one recorder file while cellular/Internet is available and confirm that
 The bridge searches recorder-specific firmware folders using both the canonical registration folder name (for example `F-CJAF/FIRMWARE`) and the compact five-character recorder registration folder name (for example `FCJAF/FIRMWARE`) before falling back to `SLM-STC-DATA/FIRMWARE`. Folder-name matching for `FIRMWARE` is case-insensitive. Firmware `.bin` files up to 32 MiB are accepted; the recorder OTA endpoint remains the final authority for whether the image fits the device.
 
 Before testing with firmware files added through the Google Drive browser, confirm that the recorder Drive credential was regenerated with both `drive.file` and `drive.readonly`. A credential minted with only `drive.file` may still upload recorder files but may not see manually staged firmware files.
+
+## Process-button lock validation for 0.3.28
+
+1. Press **Process** for one recorder file and confirm only that file's button becomes grey immediately.
+2. Confirm the label follows Downloading, Analyzing, Queued, Uploading, and Finalizing as applicable.
+3. Reload the recorder page while the item is queued and confirm the button remains grey.
+4. Attempt a duplicate request from another WebView/page and confirm the bridge rejects it.
+5. Interrupt Internet access while queued or uploading and confirm the button remains grey while automatic retry is pending.
+6. Force a download or analysis failure and confirm the transfer is cleared and the blue **Process** button returns.
+7. Complete upload and archive and confirm the root-file row disappears without briefly becoming active again.
+
+## Android navigation-bar clearance validation for 0.3.29
+
+1. Configure the Android device to use three-button navigation.
+2. Open SLM Bridge in portrait orientation.
+3. Verify that the bottom of the recorder Web page stops above the Back, Home, and Recent Apps buttons.
+4. Verify that the recorder page can still be scrolled to its last control.
+5. Repeat with gesture navigation and verify that no unnecessary fixed blank area is added beyond the inset reported by Android.
+
+### Message-dialog and file-processing validation (0.3.30)
+
+- Confirm that permission, connection, recorder-not-found, recorder-not-responding, disconnection, invalid-Wi-Fi, file-selection and download-failure messages remain visible until OK is pressed and wrap within the dialog.
+- With two root `.bin` files, start Process on one file. Confirm the other Process button is grey during Downloading and Analyzing, becomes blue again at Queued, and also becomes blue again after a download or analysis failure.

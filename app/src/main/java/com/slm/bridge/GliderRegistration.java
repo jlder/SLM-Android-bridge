@@ -5,7 +5,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class GliderRegistration {
-    private static final Pattern RECORDER_SSID = Pattern.compile("SLM-([A-Z0-9]{5})");
+    static final int SUPPORTED_WIFI_GENERATION = 2;
+
+    // Generation 1 used SLM-FCJAF. Generation 2 and later use SLM2-FCJAF,
+    // SLM3-FCJAF, etc. Older/newer generations are recognized for diagnosis
+    // but only the supported generation is connectable.
+    private static final Pattern RECORDER_SSID =
+            Pattern.compile("SLM(?:(\\d+))?-([A-Z0-9]{5})");
     private static final Pattern EMBEDDED = Pattern.compile("([A-Z0-9]{1,3}-[A-Z0-9]{2,8})");
     private static final Pattern VALID = Pattern.compile("[A-Z0-9]{1,3}-[A-Z0-9]{2,8}");
     private static final Pattern COMPACT_SINGLE_LETTER = Pattern.compile("[A-Z][A-Z0-9]{4}");
@@ -13,16 +19,33 @@ final class GliderRegistration {
     private GliderRegistration() {}
 
     static boolean isRecorderSsid(String ssid) {
-        return !compactFromRecorderSsid(ssid).isEmpty();
+        return wifiGenerationFromSsid(ssid) > 0;
+    }
+
+    static boolean isSupportedRecorderSsid(String ssid) {
+        return wifiGenerationFromSsid(ssid) == SUPPORTED_WIFI_GENERATION;
+    }
+
+    static int wifiGenerationFromSsid(String ssid) {
+        Matcher matcher = RECORDER_SSID.matcher(normalizeSsid(ssid));
+        if (!matcher.matches()) return 0;
+        String generation = matcher.group(1);
+        if (generation == null || generation.isEmpty()) return 1;
+        try {
+            int parsed = Integer.parseInt(generation);
+            return parsed > 0 ? parsed : 0;
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
     }
 
     static String compactFromRecorderSsid(String ssid) {
-        String value = normalizeSsid(ssid);
-        Matcher matcher = RECORDER_SSID.matcher(value);
-        return matcher.matches() ? matcher.group(1) : "";
+        Matcher matcher = RECORDER_SSID.matcher(normalizeSsid(ssid));
+        return matcher.matches() ? matcher.group(2) : "";
     }
 
     static String wifiPasswordFromSsid(String ssid) {
+        if (!isSupportedRecorderSsid(ssid)) return "";
         String compact = compactFromRecorderSsid(ssid);
         if (compact.isEmpty()) return "";
         return "SLM" + new StringBuilder(compact).reverse();
@@ -30,16 +53,12 @@ final class GliderRegistration {
 
     static String fromSsid(String ssid) {
         String value = normalizeSsid(ssid);
-        if (value.startsWith("SLM-")) {
-            String compact = compactFromRecorderSsid(value);
-            if (!compact.isEmpty()) return compact.substring(0, 1) + "-" + compact.substring(1);
-        } else if (value.startsWith("SLM_") || value.startsWith("SLM ")) {
+        String compact = compactFromRecorderSsid(value);
+        if (!compact.isEmpty()) return compact.substring(0, 1) + "-" + compact.substring(1);
+        if (value.startsWith("SLM_") || value.startsWith("SLM ")) {
             value = value.substring(4).trim();
         }
-        if (isValid(value)) {
-            return value;
-        }
-        // Recorder SSIDs use a compact registration, for example SLM-FCJAF.
+        if (isValid(value)) return value;
         // Preserve the canonical Drive folder name by restoring F-CJAF.
         if (COMPACT_SINGLE_LETTER.matcher(value).matches()) {
             return value.substring(0, 1) + "-" + value.substring(1);
@@ -49,7 +68,6 @@ final class GliderRegistration {
         while (matcher.find()) result = matcher.group(1);
         return isValid(result) ? result : "";
     }
-
 
     static String displayRegistration(String value) {
         String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);

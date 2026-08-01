@@ -13,8 +13,8 @@ android {
         applicationId 'com.slm.bridge'
         minSdk 29
         targetSdk 35
-        versionCode 28
-        versionName '0.3.25'
+        versionCode 32
+        versionName '0.3.30'
     }
 
     buildTypes {

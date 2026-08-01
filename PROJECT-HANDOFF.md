@@ -10,7 +10,7 @@ an Internet connection is available.
 The recorder remains the source of truth for its Web interface and supplies
 the Google Drive OAuth configuration through its restricted
 `/api/slm-drive-config` endpoint. Glider registration is derived from the
-recorder SSID, for example `SLM-FCJAF` becomes `F-CJAF`.
+recorder SSID, for example `SLM2-FCJAF` becomes `F-CJAF`.
 
 ## Current Android configuration
 
@@ -19,13 +19,13 @@ recorder SSID, for example `SLM-FCJAF` becomes `F-CJAF`.
 - Target/compile API: 35
 - Java: 17
 - Android Gradle Plugin: 8.13.2
-- Current source version: 0.3.25 (`versionCode` 28)
+- Current source version: 0.3.26 (`versionCode` 29)
 
 ## Implemented behavior
 
 - **CONNECT** requests an Android Wi-Fi scan and waits for the scan-results
   broadcast. When Android reports fresh results, only fresh recorder SSIDs
-  matching `SLM-` followed by five uppercase alphanumeric characters are offered.
+  matching `SLM2-` followed by five uppercase alphanumeric characters are offered.
   If Android throttles the scan, the bridge may use recent cached results, but
   SSIDs that just failed connection are temporarily suppressed to avoid
   immediately re-offering a stopped recorder.
@@ -33,7 +33,7 @@ recorder SSID, for example `SLM-FCJAF` becomes `F-CJAF`.
   one matching recorder is visible, the app shows a selection dialog sorted by
   signal level.
 - The recorder WPA2 password is generated from the selected SSID as `SLM` plus the
-  reversed five-character registration, for example `SLM-FCJAF` -> `SLMFAJCF`.
+  reversed five-character registration, for example `SLM2-FCJAF` -> `SLMFAJCF`.
 - There is no recorder connection configuration menu and no stored Wi-Fi password.
 - One Android recorder-network request is made per Connect action; the app does
   not automatically cycle through recorders and reopen the system dialog.
