@@ -215,6 +215,6 @@ Version 0.3.29 applies the Android system-bar insets to the Bridge root layout. 
 
 Before downloading a recorder `.bin`, the Bridge requests the companion `.sha`. If present, it validates metadata, file length, and SHA-256 before analysis or upload. A missing `.sha` is accepted as a legacy file and remains protected by the Bridge-to-server transfer SHA. Malformed metadata or a size/SHA mismatch stops processing and leaves the recorder file available for investigation.
 
-## v0.3.32 server-side upload verification
+## v0.3.33 end-to-end SHA-256 verification
 
-After the recorder/Bridge SHA-256 check, the Bridge also verifies the copy stored in Google Drive before requesting recorder archiving. Google Drive exposes the stored binary size and server-computed MD5 checksum. The Bridge computes the local MD5, uploads the file, then requires both the Drive size and MD5 to match. A mismatch leaves the transfer queued and the recorder file unarchived. Legacy files remain supported: their SHA-256 begins at the Bridge read, while the Drive MD5 still verifies the final stored bytes.
+After the recorder/Bridge SHA-256 check, the Bridge verifies the copy stored in Google Drive before requesting recorder archiving. It requests Drive's output-only `size` and `sha256Checksum` fields and requires both to match the local file and the SHA-256 already associated with the transfer. A missing or mismatched Drive SHA-256 leaves the transfer queued and the recorder file unarchived. Legacy files remain supported: their SHA-256 is established when the Bridge reads the SD file, then compared directly with Drive's server-computed SHA-256.

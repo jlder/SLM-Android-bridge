@@ -15,18 +15,17 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.Locale;
 final class GoogleDriveUploader {
     private static final class DriveFileIntegrity {
         final String id;
         final long size;
-        final String md5;
+        final String sha256;
 
-        DriveFileIntegrity(String id, long size, String md5) {
+        DriveFileIntegrity(String id, long size, String sha256) {
             this.id = id == null ? "" : id;
             this.size = size;
-            this.md5 = md5 == null ? "" : md5.toLowerCase(Locale.US);
+            this.sha256 = sha256 == null ? "" : sha256.toLowerCase(Locale.US);
         }
     }
     interface Progress { void update(int percent) throws Exception; }
@@ -74,10 +73,9 @@ final class GoogleDriveUploader {
         if (!item.driveSubfolder.isEmpty()) {
             folder = childFolder(network, token, folder, item.driveSubfolder, item.registration);
         }
-        String localMd5 = digestFile(item.file, "MD5");
         DriveFileIntegrity duplicate = findBySha256(network, token, folder, item.sha256);
         if (duplicate != null) {
-            verifyDriveIntegrity(duplicate, item.file.length(), localMd5);
+            verifyDriveIntegrity(duplicate, item.file.length(), item.sha256);
             store.markUploaded(item);
             progress.update(100);
             return;
@@ -108,7 +106,7 @@ final class GoogleDriveUploader {
         if (uploaded == null) {
             throw new IllegalStateException("Drive upload completed but the stored file was not found");
         }
-        verifyDriveIntegrity(uploaded, item.file.length(), localMd5);
+        verifyDriveIntegrity(uploaded, item.file.length(), item.sha256);
         store.markUploaded(item);
         progress.update(100);
     }
@@ -203,7 +201,7 @@ final class GoogleDriveUploader {
                 + escapeQuery(sha256) + "' }";
         String url = DRIVE_FILES
                 + "?spaces=drive&pageSize=1&orderBy=createdTime%20desc"
-                + "&fields=files(id,size,md5Checksum)&q=" + query(q);
+                + "&fields=files(id,size,sha256Checksum)&q=" + query(q);
         JSONArray files = authorizedJson(network, token, url, "GET", null,
                 "Drive integrity lookup").optJSONArray("files");
         if (files == null || files.length() == 0) return null;
@@ -212,7 +210,7 @@ final class GoogleDriveUploader {
         return new DriveFileIntegrity(
                 file.optString("id"),
                 parseLong(file.optString("size"), -1),
-                file.optString("md5Checksum"));
+                file.optString("sha256Checksum"));
     }
 
     private DriveFileIntegrity waitForBySha256(Network network, String token, String folder,
@@ -226,15 +224,15 @@ final class GoogleDriveUploader {
     }
 
     private static void verifyDriveIntegrity(DriveFileIntegrity remote, long localSize,
-                                             String localMd5) {
+                                             String localSha256) {
         if (remote.size != localSize) {
             throw new IllegalStateException("Drive size verification failed");
         }
-        if (remote.md5.isEmpty()) {
-            throw new IllegalStateException("Drive MD5 verification is unavailable");
+        if (remote.sha256.isEmpty()) {
+            throw new IllegalStateException("Drive SHA-256 verification is unavailable");
         }
-        if (!remote.md5.equalsIgnoreCase(localMd5)) {
-            throw new IllegalStateException("Drive MD5 verification failed");
+        if (!remote.sha256.equalsIgnoreCase(localSha256)) {
+            throw new IllegalStateException("Drive SHA-256 verification failed");
         }
     }
 
@@ -417,22 +415,6 @@ final class GoogleDriveUploader {
             }
             return out.toString(StandardCharsets.UTF_8.name());
         }
-    }
-
-    private static String digestFile(java.io.File file, String algorithm) throws Exception {
-        MessageDigest digest = MessageDigest.getInstance(algorithm);
-        try (InputStream in = new java.io.FileInputStream(file)) {
-            byte[] buffer = new byte[64 * 1024];
-            int count;
-            while ((count = in.read(buffer)) >= 0) {
-                if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
-                if (count > 0) digest.update(buffer, 0, count);
-            }
-        }
-        byte[] value = digest.digest();
-        StringBuilder hex = new StringBuilder(value.length * 2);
-        for (byte b : value) hex.append(String.format(Locale.US, "%02x", b & 0xff));
-        return hex.toString();
     }
 
     private static long parseLong(String value, long fallback) {
