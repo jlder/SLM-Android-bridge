@@ -1,11 +1,38 @@
+# Gradle and Android Studio generated files
 .gradle/
 .idea/
-local.properties
 **/build/
+.externalNativeBuild/
+.cxx/
+captures/
 *.iml
+*.hprof
+*.log
+
+# Machine-local Android SDK configuration
+local.properties
+
+# Packaged build outputs
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Signing material
+*.jks
+*.keystore
+*.p12
+*.pem
+
+# OAuth, Drive, and private configuration
 client_secret*.json
 *.oauth.json
 *.private.json
 slm-drive-config*.json
+google-services.json
 .secrets/
 upload-token.txt
+
+# Operating-system files
+.DS_Store
+Thumbs.db
