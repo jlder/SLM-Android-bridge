@@ -15,7 +15,20 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Locale;
 final class GoogleDriveUploader {
+    private static final class DriveFileIntegrity {
+        final String id;
+        final long size;
+        final String md5;
+
+        DriveFileIntegrity(String id, long size, String md5) {
+            this.id = id == null ? "" : id;
+            this.size = size;
+            this.md5 = md5 == null ? "" : md5.toLowerCase(Locale.US);
+        }
+    }
     interface Progress { void update(int percent) throws Exception; }
     interface NetworkProvider { Network uploadNetwork(); }
 
@@ -61,7 +74,10 @@ final class GoogleDriveUploader {
         if (!item.driveSubfolder.isEmpty()) {
             folder = childFolder(network, token, folder, item.driveSubfolder, item.registration);
         }
-        if (isDuplicate(network, token, folder, item.sha256)) {
+        String localMd5 = digestFile(item.file, "MD5");
+        DriveFileIntegrity duplicate = findBySha256(network, token, folder, item.sha256);
+        if (duplicate != null) {
+            verifyDriveIntegrity(duplicate, item.file.length(), localMd5);
             store.markUploaded(item);
             progress.update(100);
             return;
@@ -88,6 +104,11 @@ final class GoogleDriveUploader {
             progress.update(preparedPercent);
         }
         uploadChunks(network, token, item, offset, progress);
+        DriveFileIntegrity uploaded = waitForBySha256(network, token, folder, item.sha256);
+        if (uploaded == null) {
+            throw new IllegalStateException("Drive upload completed but the stored file was not found");
+        }
+        verifyDriveIntegrity(uploaded, item.file.length(), localMd5);
         store.markUploaded(item);
         progress.update(100);
     }
@@ -175,13 +196,46 @@ final class GoogleDriveUploader {
         return id;
     }
 
-    private boolean isDuplicate(Network network, String token, String folder, String sha256) throws Exception {
-        String q = "'" + escapeQuery(folder) + "' in parents and trashed = false and appProperties has { key='sha256' and value='"
+    private DriveFileIntegrity findBySha256(Network network, String token, String folder,
+                                               String sha256) throws Exception {
+        String q = "'" + escapeQuery(folder)
+                + "' in parents and trashed = false and appProperties has { key='sha256' and value='"
                 + escapeQuery(sha256) + "' }";
-        String url = DRIVE_FILES + "?spaces=drive&pageSize=1&fields=files(id)&q=" + query(q);
+        String url = DRIVE_FILES
+                + "?spaces=drive&pageSize=1&orderBy=createdTime%20desc"
+                + "&fields=files(id,size,md5Checksum)&q=" + query(q);
         JSONArray files = authorizedJson(network, token, url, "GET", null,
-                "Drive duplicate lookup").optJSONArray("files");
-        return files != null && files.length() > 0;
+                "Drive integrity lookup").optJSONArray("files");
+        if (files == null || files.length() == 0) return null;
+
+        JSONObject file = files.getJSONObject(0);
+        return new DriveFileIntegrity(
+                file.optString("id"),
+                parseLong(file.optString("size"), -1),
+                file.optString("md5Checksum"));
+    }
+
+    private DriveFileIntegrity waitForBySha256(Network network, String token, String folder,
+                                                String sha256) throws Exception {
+        for (int attempt = 0; attempt < 5; attempt++) {
+            DriveFileIntegrity result = findBySha256(network, token, folder, sha256);
+            if (result != null) return result;
+            if (attempt < 4) Thread.sleep(500L);
+        }
+        return null;
+    }
+
+    private static void verifyDriveIntegrity(DriveFileIntegrity remote, long localSize,
+                                             String localMd5) {
+        if (remote.size != localSize) {
+            throw new IllegalStateException("Drive size verification failed");
+        }
+        if (remote.md5.isEmpty()) {
+            throw new IllegalStateException("Drive MD5 verification is unavailable");
+        }
+        if (!remote.md5.equalsIgnoreCase(localMd5)) {
+            throw new IllegalStateException("Drive MD5 verification failed");
+        }
     }
 
     private String createSession(Network network, String token, TransferStore.Item item,
@@ -363,6 +417,27 @@ final class GoogleDriveUploader {
             }
             return out.toString(StandardCharsets.UTF_8.name());
         }
+    }
+
+    private static String digestFile(java.io.File file, String algorithm) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance(algorithm);
+        try (InputStream in = new java.io.FileInputStream(file)) {
+            byte[] buffer = new byte[64 * 1024];
+            int count;
+            while ((count = in.read(buffer)) >= 0) {
+                if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+                if (count > 0) digest.update(buffer, 0, count);
+            }
+        }
+        byte[] value = digest.digest();
+        StringBuilder hex = new StringBuilder(value.length * 2);
+        for (byte b : value) hex.append(String.format(Locale.US, "%02x", b & 0xff));
+        return hex.toString();
+    }
+
+    private static long parseLong(String value, long fallback) {
+        try { return Long.parseLong(value); }
+        catch (Exception ignored) { return fallback; }
     }
 
     private static String escapeQuery(String value) {

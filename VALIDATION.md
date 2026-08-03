@@ -1,43 +1,35 @@
-# SLM Bridge v0.3.31 validation
+# SLM Bridge v0.3.32 validation
 
-## Purpose
+## Scope
 
-Validate recorder creation-SHA verification before browser analysis and upload.
+This release adds Google Drive stored-file verification after upload. It does not change recorder SHA metadata, browser analysis, or File Management grouping.
 
-## New immutable file with SHA
+## Normal immutable file
 
-1. Record and stop a new session with recorder v1.32 or later.
-2. Confirm matching `.bin` and `.sha` files are present in the recorder root.
-3. Press **Process** for the `.bin` file.
-4. Confirm download completes, analysis starts, and normal queue/upload behavior follows.
-5. Confirm Bridge transfer metadata records `integrityStatus=creation-verified`.
+1. Record a new immutable `.bin` with companion `.sha`.
+2. Process it through the Bridge.
+3. Confirm recorder SHA verification succeeds.
+4. Confirm upload reaches 100%.
+5. Confirm the recorder archives the `.bin` and `.sha` only after Drive verification.
+6. Confirm the Drive file size equals the local file size.
+7. Confirm the Drive `md5Checksum` equals a PC-computed MD5 of the `.bin`.
 
-## Legacy file without SHA
+## Legacy file
 
-1. Place or retain a legacy `.bin` without a companion `.sha` in the root.
-2. Press **Process**.
-3. Confirm processing continues normally.
-4. Confirm Bridge transfer metadata records `integrityStatus=legacy`.
+1. Place a valid legacy `.bin` without `.sha` in the recorder root.
+2. Process it.
+3. Confirm it is accepted as legacy.
+4. Confirm Drive size and MD5 are still verified before recorder archiving.
 
-## SHA mismatch
+## Failure cases
 
-1. Create a valid `.bin`/`.sha` pair.
-2. Change one byte in the `.bin` without changing `.sha`.
-3. Press **Process**.
-4. Confirm the Bridge reports `Recorder file SHA changed since creation`.
-5. Confirm analysis and upload do not start and the recorder file remains available.
+- Simulate a Drive size mismatch: upload must not be marked complete and recorder archive must not be requested.
+- Simulate a Drive MD5 mismatch: upload must remain pending and the local transfer file must be retained.
+- Simulate unavailable `md5Checksum`: upload must remain pending.
+- Restart the Bridge after a completed upload but before local completion state is stored: the duplicate lookup must verify Drive size/MD5 and then complete without re-uploading.
+- Temporarily remove Internet access after recorder download: the item must remain queued and later upload/verify normally.
 
-## Size mismatch
+## Expected integrity chain
 
-1. Edit the `size=` value in a valid `.sha` file.
-2. Press **Process**.
-3. Confirm the Bridge reports `Recorder file size changed since creation`.
-4. Confirm analysis and upload do not start.
-
-## Invalid metadata
-
-Test an invalid format, filename, size, and SHA text. Each must stop processing before analysis/upload.
-
-## Real-file parser validation
-
-The four supplied `FCBBB_20260803_1` through `_4` `.bin`/`.sha` pairs were independently checked. All metadata filenames, sizes, and SHA-256 values match.
+- New immutable files: recorder SHA-256 = Bridge read SHA-256; Bridge local MD5 = Drive server MD5.
+- Legacy files: Bridge read SHA-256 establishes the transfer identity; Bridge local MD5 = Drive server MD5.
