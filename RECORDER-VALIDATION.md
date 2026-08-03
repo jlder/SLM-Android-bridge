@@ -158,3 +158,8 @@ Before testing with firmware files added through the Google Drive browser, confi
 
 - Confirm that permission, connection, recorder-not-found, recorder-not-responding, disconnection, invalid-Wi-Fi, file-selection and download-failure messages remain visible until OK is pressed and wrap within the dialog.
 - With two root `.bin` files, start Process on one file. Confirm the other Process button is grey during Downloading and Analyzing, becomes blue again at Queued, and also becomes blue again after a download or analysis failure.
+
+
+## v0.3.31 recorder creation-SHA verification
+
+Before downloading a recorder `.bin`, the Bridge requests the companion `.sha`. If present, it validates metadata, file length, and SHA-256 before analysis or upload. A missing `.sha` is accepted as a legacy file and remains protected by the Bridge-to-server transfer SHA. Malformed metadata or a size/SHA mismatch stops processing and leaves the recorder file available for investigation.

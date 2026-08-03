@@ -209,3 +209,8 @@ Version 0.3.29 applies the Android system-bar insets to the Bridge root layout. 
 
 - User-action and error messages now use persistent, wrapped dialogs with an OK button instead of short-lived large Toast messages. Brief progress confirmations such as Connecting and Saving remain transient.
 - Recorder web UI integration supports the recorder-side global Process-button lock during Downloading and Analyzing.
+
+
+## v0.3.31 recorder creation-SHA verification
+
+Before downloading a recorder `.bin`, the Bridge requests the companion `.sha`. If present, it validates metadata, file length, and SHA-256 before analysis or upload. A missing `.sha` is accepted as a legacy file and remains protected by the Bridge-to-server transfer SHA. Malformed metadata or a size/SHA mismatch stops processing and leaves the recorder file available for investigation.

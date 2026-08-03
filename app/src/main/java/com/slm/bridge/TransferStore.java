@@ -30,6 +30,7 @@ final class TransferStore {
         boolean analysisComplete;
         boolean archived;
         String sha256;
+        String integrityStatus;
         String uploadSession;
         long uploadedBytes;
         final long createdAt;
@@ -37,8 +38,8 @@ final class TransferStore {
         Item(String id, String filename, File file, String registration, String driveSubfolder,
              boolean uploadRequested,
              boolean downloadComplete, boolean uploaded, boolean archiveRequested,
-             boolean analysisComplete, boolean archived, String sha256, String uploadSession,
-             long uploadedBytes, long createdAt) {
+             boolean analysisComplete, boolean archived, String sha256, String integrityStatus,
+             String uploadSession, long uploadedBytes, long createdAt) {
             this.id = id;
             this.filename = filename;
             this.file = file;
@@ -51,6 +52,7 @@ final class TransferStore {
             this.analysisComplete = analysisComplete;
             this.archived = archived;
             this.sha256 = sha256;
+            this.integrityStatus = integrityStatus == null ? "" : integrityStatus;
             this.uploadSession = uploadSession;
             this.uploadedBytes = uploadedBytes;
             this.createdAt = createdAt;
@@ -82,7 +84,7 @@ final class TransferStore {
         String id = UUID.randomUUID().toString();
         Item item = new Item(id, filename, dataFile(id), registration, "",
                 uploadRequested, false, false, uploadRequested, false, false,
-                "", "", 0, System.currentTimeMillis());
+                "", "", "", 0, System.currentTimeMillis());
         items.put(id, item);
         persist(item);
         return item;
@@ -92,15 +94,16 @@ final class TransferStore {
         String id = UUID.randomUUID().toString();
         Item item = new Item(id, filename, dataFile(id), registration, "reports",
                 true, false, false, false, true, false,
-                "", "", 0, System.currentTimeMillis());
+                "", "", "", 0, System.currentTimeMillis());
         items.put(id, item);
         persist(item);
         return item;
     }
 
-    synchronized void markDownloaded(Item item, String sha256) throws Exception {
+    synchronized void markDownloaded(Item item, String sha256, String integrityStatus) throws Exception {
         item.downloadComplete = true;
         item.sha256 = sha256;
+        item.integrityStatus = integrityStatus == null ? "" : integrityStatus;
         persist(item);
     }
 
@@ -202,8 +205,9 @@ final class TransferStore {
                         value.optBoolean("archiveRequested", false),
                         value.optBoolean("analysisComplete", false),
                         value.optBoolean("archived", false),
-                        value.optString("sha256"), value.optString("uploadSession"),
-                        value.optLong("uploadedBytes"), value.optLong("createdAt"));
+                        value.optString("sha256"), value.optString("integrityStatus", "legacy"),
+                        value.optString("uploadSession"), value.optLong("uploadedBytes"),
+                        value.optLong("createdAt"));
                 if (item.uploaded && !item.archiveRequested) {
                     removeFiles(id);
                 } else if (item.downloadComplete && item.file.isFile()) {
@@ -232,6 +236,7 @@ final class TransferStore {
                 .put("analysisComplete", item.analysisComplete)
                 .put("archived", item.archived)
                 .put("sha256", item.sha256)
+                .put("integrityStatus", item.integrityStatus)
                 .put("uploadSession", item.uploadSession)
                 .put("uploadedBytes", item.uploadedBytes)
                 .put("createdAt", item.createdAt);

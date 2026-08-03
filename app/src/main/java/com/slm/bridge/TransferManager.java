@@ -10,6 +10,7 @@ import org.json.JSONObject;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -18,6 +19,7 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -26,6 +28,28 @@ final class TransferManager {
     private static final long CREDENTIAL_IDLE_GRACE_MS = 120_000L;
 
     interface QueueListener { void onQueueStatus(QueueStatus status); }
+
+    private static final class RecorderShaMetadata {
+        final String filename;
+        final long size;
+        final String sha256;
+
+        RecorderShaMetadata(String filename, long size, String sha256) {
+            this.filename = filename;
+            this.size = size;
+            this.sha256 = sha256;
+        }
+    }
+
+    private static final class DownloadResult {
+        final String sha256;
+        final long size;
+
+        DownloadResult(String sha256, long size) {
+            this.sha256 = sha256;
+            this.size = size;
+        }
+    }
 
     static final class QueueStatus {
         static final int IDLE = 0;
@@ -203,8 +227,14 @@ final class TransferManager {
             }
             item = store.create(filename, registration, upload);
             emit(item, "download-started", 0, null);
-            String sha256 = download(item);
-            store.markDownloaded(item, sha256);
+            RecorderShaMetadata expected = fetchRecorderShaMetadata(item.filename);
+            DownloadResult downloaded = download(item);
+            String integrityStatus = "legacy";
+            if (expected != null) {
+                verifyRecorderSha(item.filename, expected, downloaded);
+                integrityStatus = "creation-verified";
+            }
+            store.markDownloaded(item, downloaded.sha256, integrityStatus);
             emit(item, "download-complete", 100, null);
             publishQueueSnapshot(null);
         } catch (Exception e) {
@@ -229,7 +259,7 @@ final class TransferManager {
 
             item = store.createReport(filename, registration);
             String sha256 = downloadReportWithRetry(item, request);
-            store.markDownloaded(item, sha256);
+            store.markDownloaded(item, sha256, "generated-report");
             publishQueueSnapshot(null);
             TransferStore.Item downloaded = item;
             uploadExecutor.execute(() -> uploadOrQueue(downloaded));
@@ -256,10 +286,92 @@ final class TransferManager {
         throw last == null ? new IllegalStateException("Calibration report download failed") : last;
     }
 
-    private String download(TransferStore.Item item) throws Exception {
+    private RecorderShaMetadata fetchRecorderShaMetadata(String filename) throws Exception {
+        if (!filename.toLowerCase(Locale.US).endsWith(".bin")) return null;
+        String shaFilename = filename.substring(0, filename.length() - 4) + ".sha";
+        String encoded = URLEncoder.encode(shaFilename, StandardCharsets.UTF_8.name()).replace("+", "%20");
+        URL url = new URL(settings.recorderBaseUrl() + "/api/download?file=" + encoded);
+        Network network = networks.recorderNetwork();
+        if (network == null) throw new IllegalStateException("Recorder Wi-Fi is unavailable");
+
+        HttpURLConnection connection = (HttpURLConnection) network.openConnection(url);
+        connection.setInstanceFollowRedirects(false);
+        connection.setConnectTimeout(15_000);
+        connection.setReadTimeout(15_000);
+        connection.setRequestProperty("Accept", "text/plain");
+        try {
+            int status = connection.getResponseCode();
+            if (status == HttpURLConnection.HTTP_NOT_FOUND) return null;
+            if (status / 100 != 2) {
+                throw new IllegalStateException("Recorder SHA metadata returned HTTP " + status);
+            }
+            long length = connection.getContentLengthLong();
+            if (length > 4096) throw new IllegalStateException("Recorder SHA metadata is too large");
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (InputStream in = new BufferedInputStream(connection.getInputStream())) {
+                byte[] buffer = new byte[512];
+                int count;
+                while ((count = in.read(buffer)) >= 0) {
+                    if (out.size() + count > 4096) {
+                        throw new IllegalStateException("Recorder SHA metadata is too large");
+                    }
+                    out.write(buffer, 0, count);
+                }
+            }
+            return parseRecorderShaMetadata(filename, out.toString(StandardCharsets.UTF_8.name()));
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private static RecorderShaMetadata parseRecorderShaMetadata(String requestedFilename,
+                                                                 String text) {
+        String format = "";
+        String filename = "";
+        String sizeText = "";
+        String sha256 = "";
+        for (String rawLine : text.split("\\r?\\n")) {
+            String line = rawLine.trim();
+            if (line.isEmpty()) continue;
+            int separator = line.indexOf('=');
+            if (separator <= 0) throw new IllegalStateException("Invalid recorder SHA metadata");
+            String key = line.substring(0, separator).trim();
+            String value = line.substring(separator + 1).trim();
+            if ("format".equals(key)) format = value;
+            else if ("filename".equals(key)) filename = value;
+            else if ("size".equals(key)) sizeText = value;
+            else if ("sha256".equals(key)) sha256 = value.toLowerCase(Locale.US);
+        }
+        if (!"1".equals(format) || !requestedFilename.equals(filename)) {
+            throw new IllegalStateException("Recorder SHA metadata does not match the file");
+        }
+        long size;
+        try {
+            size = Long.parseLong(sizeText);
+        } catch (NumberFormatException e) {
+            throw new IllegalStateException("Recorder SHA metadata has an invalid size");
+        }
+        if (size < 0 || !sha256.matches("[0-9a-f]{64}")) {
+            throw new IllegalStateException("Recorder SHA metadata is invalid");
+        }
+        return new RecorderShaMetadata(filename, size, sha256);
+    }
+
+    private static void verifyRecorderSha(String filename, RecorderShaMetadata expected,
+                                           DownloadResult downloaded) {
+        if (downloaded.size != expected.size) {
+            throw new IllegalStateException("Recorder file size changed since creation: " + filename);
+        }
+        if (!downloaded.sha256.equalsIgnoreCase(expected.sha256)) {
+            throw new IllegalStateException("Recorder file SHA changed since creation: " + filename);
+        }
+    }
+
+    private DownloadResult download(TransferStore.Item item) throws Exception {
         String encoded = URLEncoder.encode(item.filename, StandardCharsets.UTF_8.name()).replace("+", "%20");
         URL url = new URL(settings.recorderBaseUrl() + "/api/download?file=" + encoded);
-        return downloadFromUrl(item, url.toString(), "application/octet-stream", "", "");
+        String sha256 = downloadFromUrl(item, url.toString(), "application/octet-stream", "", "");
+        return new DownloadResult(sha256, item.file.length());
     }
 
     private String downloadFromUrl(TransferStore.Item item, String sourceUrl, String mimeType,
@@ -624,7 +736,10 @@ final class TransferManager {
             detail.put("filename", item == null ? "" : item.filename);
             detail.put("state", state);
             detail.put("percent", percent);
-            if (item != null && item.downloadComplete) detail.put("localUrl", item.localUrl());
+            if (item != null && item.downloadComplete) {
+                detail.put("localUrl", item.localUrl());
+                detail.put("integrityStatus", item.integrityStatus);
+            }
             if (error != null && !error.isEmpty()) detail.put("error", error);
             String script = "window.dispatchEvent(new CustomEvent('slm-transfer-event',{detail:"
                     + detail + "}));";
