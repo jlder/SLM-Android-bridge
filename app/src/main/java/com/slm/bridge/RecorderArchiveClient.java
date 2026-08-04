@@ -42,7 +42,7 @@ final class RecorderArchiveClient {
     private int postArchive(Network network, String filename) throws Exception {
         String encoded = URLEncoder.encode(filename, StandardCharsets.UTF_8.name())
                 .replace("+", "%20");
-        String endpoint = settings.recorderBaseUrl() + "/api/delete?file=" + encoded;
+        String endpoint = settings.recorderBaseUrl() + "/api/archive?file=" + encoded;
         if (!RecorderUrlPolicy.isAllowed(endpoint, settings.recorderBaseUrl())) {
             throw new SecurityException("Recorder archive endpoint is outside the recorder");
         }

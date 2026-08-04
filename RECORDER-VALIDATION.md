@@ -1,6 +1,6 @@
 # Recorder-local validation checklist
 
-Use a disposable recording/file for archive and delete tests. Do not use the only
+Use a disposable recording/file for archive tests. Do not use the only
 copy of important recorder data.
 
 ## Connection and interface
@@ -47,7 +47,7 @@ copy of important recorder data.
 - Analyze a disposable recording and confirm the analysis and resulting log.
 - Archive a disposable file, accept the JavaScript confirmation, refresh the list,
   and confirm the recorder performed the intended SD-card state change.
-- Delete a disposable file, accept the JavaScript confirmation, refresh the list,
+- Archive a disposable file through the verified upload workflow, refresh the list,
   and confirm it is absent.
 
 ## Downloads to the phone
@@ -89,7 +89,7 @@ copy of important recorder data.
 
 ## Failure checks
 
-- Reject an Archive/Delete confirmation and confirm no recorder change occurs.
+- Cancel an archive confirmation and confirm no recorder change occurs.
 - Disconnect during a disposable download and confirm a failure message appears.
 - Try a function with the recorder SD card unavailable/read-only, if the recorder
   supports that safe test, and confirm the Web UI reports the failure.

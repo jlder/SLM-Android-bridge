@@ -95,6 +95,9 @@ final class TransferManager {
     private final ExecutorService preparationExecutor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final AtomicBoolean retryScheduled = new AtomicBoolean();
+    // Remember upload work that becomes ready while a retry pass is already running.
+    // Without this latch, the request is lost until another network-change event.
+    private final AtomicBoolean retryRequested = new AtomicBoolean();
     private final AtomicBoolean archiveScheduled = new AtomicBoolean();
     private final AtomicBoolean credentialPrefetchScheduled = new AtomicBoolean();
     private final AtomicBoolean credentialClearScheduled = new AtomicBoolean();
@@ -504,10 +507,26 @@ final class TransferManager {
     private void requestUploadRetry() {
         if (!store.hasPendingUploads()) return;
         cancelScheduledCredentialClear();
+        retryRequested.set(true);
+        scheduleUploadRetryWorker();
+    }
+
+    private void scheduleUploadRetryWorker() {
         if (!retryScheduled.compareAndSet(false, true)) return;
         uploadExecutor.execute(() -> {
-            try { retryPending(); }
-            finally { retryScheduled.set(false); }
+            try {
+                // Drain every retry request that arrived while this serial worker
+                // was active. New analysis-complete events therefore continue the
+                // same upload batch without waiting for a network callback.
+                while (retryRequested.getAndSet(false)) retryPending();
+            } finally {
+                retryScheduled.set(false);
+                // Close the small race between the last loop test and clearing the
+                // scheduled flag. If work arrived there, schedule a fresh worker.
+                if (retryRequested.get() && store.hasPendingUploads()) {
+                    scheduleUploadRetryWorker();
+                }
+            }
         });
     }
 

@@ -156,7 +156,6 @@ JSON.parse(SLMAndroid.getCapabilities())
 SLMAndroid.downloadRecorderFile(JSON.stringify({
   filename: 'recording.bin', analyze: true, upload: true
 }))
-SLMAndroid.deleteStoredFile(transferId)
 SLMAndroid.listServerFirmware()
 SLMAndroid.installServerFirmware(JSON.stringify(selectedFirmware))
 ```
@@ -218,3 +217,15 @@ Before downloading a recorder `.bin`, the Bridge requests the companion `.sha`. 
 ## v0.3.33 end-to-end SHA-256 verification
 
 After the recorder/Bridge SHA-256 check, the Bridge verifies the copy stored in Google Drive before requesting recorder archiving. It requests Drive's output-only `size` and `sha256Checksum` fields and requires both to match the local file and the SHA-256 already associated with the transfer. A missing or mismatched Drive SHA-256 leaves the transfer queued and the recorder file unarchived. Legacy files remain supported: their SHA-256 is established when the Bridge reads the SD file, then compared directly with Drive's server-computed SHA-256.
+
+
+## v0.3.35 — compact transfer status
+
+- The Bridge transfer information is displayed on one line.
+- The left field reports `File upload <percent>%` or `File upload None`.
+- The right field reports `File Queue <current>/<total>` or `File Queue Empty`.
+- Upload and queue behavior are unchanged.
+
+## v0.3.36 recorder archive endpoint
+
+After Drive SHA-256 verification, the Bridge calls `POST /api/archive` on the recorder.

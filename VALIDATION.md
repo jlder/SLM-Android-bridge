@@ -33,3 +33,15 @@ This release adds Google Drive stored-file verification after upload. It does no
 
 - New immutable files: recorder SHA-256 = Bridge read SHA-256; Bridge local SHA-256 = Drive server SHA-256.
 - Legacy files: Bridge read SHA-256 establishes the transfer identity; Bridge local SHA-256 = Drive server SHA-256.
+
+
+## v0.3.35 — compact transfer status
+
+- The Bridge transfer information is displayed on one line.
+- The left field reports `File upload <percent>%` or `File upload None`.
+- The right field reports `File Queue <current>/<total>` or `File Queue Empty`.
+- Upload and queue behavior are unchanged.
+
+## v0.3.36 — recorder archive endpoint
+
+Confirm a verified upload is archived through `POST /api/archive` and that queue retry behavior remains unchanged.

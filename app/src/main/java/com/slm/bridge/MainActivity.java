@@ -840,7 +840,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
         TransferManager.QueueStatus status = latestQueueStatus;
         if (status == null || status.isEmpty()) {
-            fileQueueStatus.setText("File Queue Empty");
+            fileQueueStatus.setText("File upload None        File Queue Empty");
             fileQueueStatus.setTextColor(Color.BLACK);
             fileTransferProgress.setVisibility(View.GONE);
             fileTransferProgress.setProgress(0);
@@ -851,11 +851,12 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         int current = Math.max(0, Math.min(status.currentFile, total));
         int percent = Math.max(0, Math.min(100, status.percent));
         if (status.state == TransferManager.QueueStatus.UPLOADING) {
-            fileQueueStatus.setText("Transferring File (" + current + "/" + total + ")");
+            fileQueueStatus.setText("File upload " + percent + "%        File Queue "
+                    + current + "/" + total);
             fileTransferProgress.setVisibility(View.VISIBLE);
             fileTransferProgress.setProgress(percent);
         } else {
-            fileQueueStatus.setText("File Queue " + total + "/" + total);
+            fileQueueStatus.setText("File upload None        File Queue " + total + "/" + total);
             fileTransferProgress.setVisibility(View.GONE);
             fileTransferProgress.setProgress(0);
         }

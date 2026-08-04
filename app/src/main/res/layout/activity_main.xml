@@ -108,7 +108,7 @@
         android:minHeight="22dp"
         android:paddingStart="8dp"
         android:paddingEnd="8dp"
-        android:text="File Queue Empty"
+        android:text="File upload None        File Queue Empty"
         android:textColor="#000000"
         android:textSize="14sp"
         android:textStyle="bold" />
