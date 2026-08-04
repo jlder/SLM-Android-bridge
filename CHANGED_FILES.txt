@@ -1,0 +1,6 @@
+app/build.gradle
+app/src/main/java/com/slm/bridge/IntegrityDiagnostics.java
+app/src/main/java/com/slm/bridge/TransferManager.java
+app/src/main/java/com/slm/bridge/GoogleDriveUploader.java
+README.md
+VALIDATION-v0.3.37.md

@@ -236,12 +236,21 @@ final class TransferManager {
             if (expected != null) {
                 verifyRecorderSha(item.filename, expected, downloaded);
                 integrityStatus = "creation-verified";
+                IntegrityDiagnostics.recorderCreationShaVerified(
+                        item.filename, downloaded.size, downloaded.sha256);
+            } else {
+                IntegrityDiagnostics.legacyCreationShaUnavailable(
+                        item.filename, downloaded.size, downloaded.sha256);
             }
+            IntegrityDiagnostics.recorderDownloadComplete(
+                    item.filename, downloaded.size, downloaded.sha256, integrityStatus);
             store.markDownloaded(item, downloaded.sha256, integrityStatus);
             emit(item, "download-complete", 100, null);
             publishQueueSnapshot(null);
         } catch (Exception e) {
             if (item != null && !item.downloadComplete) store.delete(item.id);
+            IntegrityDiagnostics.failure(item == null ? "" : item.filename,
+                    "recorder-download", e);
             emit(item, "failed", 0, message(e));
             publishQueueSnapshot(null);
         }
@@ -498,6 +507,8 @@ final class TransferManager {
             clearCredentialsWhenIdle();
         } catch (Exception e) {
             clearActiveUpload();
+            IntegrityDiagnostics.failure(item == null ? "" : item.filename,
+                    "drive-upload-or-verification", e);
             emit(item, "upload-pending", 0, message(e));
             publishQueueSnapshot(message(e));
         }
@@ -571,6 +582,8 @@ final class TransferManager {
                 schedulePendingArchives();
             } catch (Exception e) {
                 clearActiveUpload();
+                IntegrityDiagnostics.failure(item.filename,
+                        "drive-upload-or-verification", e);
                 emit(item, "upload-pending", 0, message(e));
                 publishQueueSnapshot(message(e));
                 break;
@@ -607,9 +620,12 @@ final class TransferManager {
             try {
                 archiveClient.archive(item.filename);
                 store.markArchived(item);
+                IntegrityDiagnostics.recorderArchiveComplete(
+                        item.filename, item.file.length(), item.sha256, item.integrityStatus);
                 emit(item, "archive-complete", 100, null);
                 store.delete(item.id);
             } catch (Exception e) {
+                IntegrityDiagnostics.failure(item.filename, "recorder-archive", e);
                 emit(item, "archive-pending", 0, message(e));
                 return;
             }

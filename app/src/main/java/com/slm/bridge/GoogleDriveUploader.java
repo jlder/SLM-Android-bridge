@@ -76,6 +76,8 @@ final class GoogleDriveUploader {
         DriveFileIntegrity duplicate = findBySha256(network, token, folder, item.sha256);
         if (duplicate != null) {
             verifyDriveIntegrity(duplicate, item.file.length(), item.sha256);
+            IntegrityDiagnostics.driveShaVerified(
+                    item.filename, item.file.length(), item.sha256, true);
             store.markUploaded(item);
             progress.update(100);
             return;
@@ -107,6 +109,8 @@ final class GoogleDriveUploader {
             throw new IllegalStateException("Drive upload completed but the stored file was not found");
         }
         verifyDriveIntegrity(uploaded, item.file.length(), item.sha256);
+        IntegrityDiagnostics.driveShaVerified(
+                item.filename, item.file.length(), item.sha256, false);
         store.markUploaded(item);
         progress.update(100);
     }

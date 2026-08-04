@@ -229,3 +229,7 @@ After the recorder/Bridge SHA-256 check, the Bridge verifies the copy stored in 
 ## v0.3.36 recorder archive endpoint
 
 After Drive SHA-256 verification, the Bridge calls `POST /api/archive` on the recorder.
+
+## v0.3.37 integrity diagnostics
+
+Version 0.3.37 adds Android diagnostic evidence under the `SLMIntegrity` log tag. It records recorder creation-SHA verification, completed recorder download, Google Drive SHA-256 verification, recorder archive completion, legacy-file status, and the stage of any integrity failure. The messages do not alter the normal UI or create/upload an additional status file.

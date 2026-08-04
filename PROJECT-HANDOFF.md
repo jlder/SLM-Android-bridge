@@ -19,7 +19,7 @@ recorder SSID, for example `SLM2-FCJAF` becomes `F-CJAF`.
 - Target/compile API: 35
 - Java: 17
 - Android Gradle Plugin: 8.13.2
-- Current source version: 0.3.26 (`versionCode` 29)
+- Current source version: 0.3.36 (`versionCode` 37)
 
 ## Implemented behavior
 
