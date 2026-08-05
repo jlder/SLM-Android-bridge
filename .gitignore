@@ -1,5 +1,6 @@
 # Gradle and Android Studio generated files
 .gradle/
+app/release/
 .idea/
 **/build/
 .externalNativeBuild/
@@ -13,8 +14,8 @@ captures/
 local.properties
 
 # Packaged build outputs
-*.apk
-*.aab
+#*.apk
+#*.aab
 *.ap_
 *.dex
 
