@@ -36,6 +36,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.Button;
 import android.widget.ProgressBar;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -68,6 +69,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private static final long RECORDER_UNAVAILABLE_BLOCK_MS = 90_000L;
     private static final long RECORDER_HEALTH_INTERVAL_MS = 3_000L;
     private static final long TITLE_BLINK_INTERVAL_MS = 550L;
+    private static final int SERVICE_DIAGNOSTICS_TAP_COUNT = 5;
+    private static final long SERVICE_DIAGNOSTICS_TAP_WINDOW_MS = 3_000L;
     private static final int RECORDER_HEALTH_MAX_FAILURES = 3;
     private AppSettings settings;
     private NetworkCoordinator networks;
@@ -79,6 +82,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private WebView webView;
     private TextView recorderStatus;
     private TextView bridgeTitle;
+    private TextView bridgeVersion;
     private TextView serverStatus;
     private TextView fileQueueStatus;
     private ProgressBar fileTransferProgress;
@@ -105,6 +109,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private boolean recorderStatusTextVisible = true;
     private String recorderStatusText = "No\nRecorder";
     private int recorderStatusColor = COLOR_AMBER;
+    private int serviceDiagnosticsTapCount;
+    private long serviceDiagnosticsFirstTapMs;
     private final Runnable titleBlinkRunnable = new Runnable() {
         @Override public void run() {
             if (!recorderStatusBlinking) return;
@@ -119,11 +125,14 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         applySystemBarInsets(findViewById(R.id.bridgeRoot));
+        IntegrityDiagnostics.initialize(this);
         settings = new AppSettings(this);
         debugBuild = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         webView = findViewById(R.id.webView);
         recorderStatus = findViewById(R.id.recorderStatus);
         bridgeTitle = findViewById(R.id.bridgeTitle);
+        bridgeVersion = findViewById(R.id.bridgeVersion);
+        bridgeVersion.setText("v" + installedVersionName());
         serverStatus = findViewById(R.id.serverStatus);
         fileQueueStatus = findViewById(R.id.fileQueueStatus);
         fileTransferProgress = findViewById(R.id.fileTransferProgress);
@@ -137,8 +146,97 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 status -> runOnUiThread(() -> updateServerQueueUi(status)));
         firmwareManager = new FirmwareManager(networks, settings, driveCredentialStore, webView);
         configureWebView(store, transfers, firmwareManager);
-        connectButton.setOnClickListener(v -> toggleConnection());
+        connectButton.setOnClickListener(v -> {
+            resetServiceDiagnosticsTapSequence();
+            toggleConnection();
+        });
+        bridgeTitle.setOnClickListener(v -> onBridgeTitleTapped());
         updateConnectionUi(networks.recorderNetwork(), networks.uploadNetwork());
+    }
+
+
+    private String installedVersionName() {
+        try {
+            String versionName = getPackageManager()
+                    .getPackageInfo(getPackageName(), 0)
+                    .versionName;
+            return versionName != null && !versionName.isEmpty() ? versionName : "unknown";
+        } catch (PackageManager.NameNotFoundException error) {
+            Log.w(LOG_TAG, "Unable to read installed Bridge version", error);
+            return "unknown";
+        }
+    }
+
+
+    private void onBridgeTitleTapped() {
+        long now = SystemClock.elapsedRealtime();
+        if (serviceDiagnosticsTapCount == 0
+                || now - serviceDiagnosticsFirstTapMs > SERVICE_DIAGNOSTICS_TAP_WINDOW_MS) {
+            serviceDiagnosticsTapCount = 1;
+            serviceDiagnosticsFirstTapMs = now;
+        } else {
+            serviceDiagnosticsTapCount++;
+        }
+
+        if (serviceDiagnosticsTapCount >= SERVICE_DIAGNOSTICS_TAP_COUNT) {
+            resetServiceDiagnosticsTapSequence();
+            showIntegrityDiagnostics();
+        }
+    }
+
+    private void resetServiceDiagnosticsTapSequence() {
+        serviceDiagnosticsTapCount = 0;
+        serviceDiagnosticsFirstTapMs = 0L;
+    }
+
+
+    private void showIntegrityDiagnostics() {
+        TextView content = new TextView(this);
+        int padding = Math.round(16 * getResources().getDisplayMetrics().density);
+        content.setPadding(padding, padding, padding, padding);
+        content.setTextIsSelectable(true);
+        content.setTextSize(12f);
+        content.setText(IntegrityDiagnostics.readAll());
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(content);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Integrity diagnostics")
+                .setView(scroll)
+                .setNeutralButton("Export", null)
+                .setNegativeButton("Clear", null)
+                .setPositiveButton("Close", null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v ->
+                    exportIntegrityDiagnostics());
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v ->
+                    new AlertDialog.Builder(this)
+                            .setTitle("Clear diagnostics")
+                            .setMessage("Remove all locally stored integrity events?")
+                            .setNegativeButton("Cancel", null)
+                            .setPositiveButton("Clear", (confirm, which) -> {
+                                IntegrityDiagnostics.clear();
+                                content.setText(IntegrityDiagnostics.readAll());
+                            })
+                            .show());
+        });
+        dialog.show();
+    }
+
+    private void exportIntegrityDiagnostics() {
+        String diagnostics = IntegrityDiagnostics.readAll();
+        Intent share = new Intent(Intent.ACTION_SEND);
+        share.setType("text/plain");
+        share.putExtra(Intent.EXTRA_SUBJECT, "SLM Bridge integrity diagnostics");
+        share.putExtra(Intent.EXTRA_TEXT, diagnostics);
+        try {
+            startActivity(Intent.createChooser(share, "Export integrity diagnostics"));
+        } catch (ActivityNotFoundException e) {
+            showMessageDialog("Export unavailable",
+                    "No application is available to export the diagnostics.");
+        }
     }
 
     private void applySystemBarInsets(View root) {

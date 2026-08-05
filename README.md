@@ -233,3 +233,25 @@ After Drive SHA-256 verification, the Bridge calls `POST /api/archive` on the re
 ## v0.3.37 integrity diagnostics
 
 Version 0.3.37 adds Android diagnostic evidence under the `SLMIntegrity` log tag. It records recorder creation-SHA verification, completed recorder download, Google Drive SHA-256 verification, recorder archive completion, legacy-file status, and the stage of any integrity failure. The messages do not alter the normal UI or create/upload an additional status file.
+
+## v0.3.38 persistent integrity diagnostics
+
+Version 0.3.38 retains the `SLMIntegrity` milestones in an application-private,
+bounded local log so integrity evidence remains available after wireless ADB is
+lost when the phone joins the recorder access point. The main screen adds a
+**DIAGNOSTICS** button. The dialog displays recent events and provides **Export**
+and **Clear** actions. Up to 1,000 events are retained; the diagnostic log is not
+uploaded and does not change transfer or integrity decisions.
+
+## v0.3.39 - hidden service diagnostics
+
+- Removed the visible Diagnostics button from the normal Bridge UI.
+- Integrity diagnostics remain stored in the existing rolling local log.
+- Tap the large `SLM / BRIDGE` title five times within three seconds to open the service diagnostics dialog.
+- Export, Clear and Close behaviour is unchanged.
+
+## v0.3.40
+
+- Displays the installed Bridge version below the `SLM / BRIDGE` title.
+- Slightly reduces the main title font to preserve header spacing.
+- Retains the hidden five-tap diagnostics trigger on the large title.

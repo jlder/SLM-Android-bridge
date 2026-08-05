@@ -31,6 +31,7 @@ public final class UploadJobService extends JobService {
     }
 
     @Override public boolean onStartJob(JobParameters parameters) {
+        IntegrityDiagnostics.initialize(this);
         executor = Executors.newSingleThreadExecutor();
         executor.execute(() -> runUploads(parameters));
         return true;
