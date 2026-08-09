@@ -95,6 +95,9 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private int recorderHealthFailures;
     private volatile Network recorderProbeNetwork;
     private volatile boolean recorderReady;
+    private volatile boolean recorderUpdateOnlyMode;
+    private String recorderLegacyPasswordFallback = "";
+    private boolean recorderLegacyPasswordAttempted;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicInteger recorderScanGeneration = new AtomicInteger();
     private final AtomicInteger recorderProbeGeneration = new AtomicInteger();
@@ -281,7 +284,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         webSettings.setSafeBrowsingEnabled(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false);
         WebView.setWebContentsDebuggingEnabled(debugBuild);
-        webView.setWebViewClient(new BridgeWebViewClient(store, settings, debugBuild));
+        webView.setWebViewClient(new BridgeWebViewClient(
+                store, settings, debugBuild, () -> recorderUpdateOnlyMode));
         webView.setWebChromeClient(createRecorderWebChromeClient());
         webView.setDownloadListener(this::onDownloadRequested);
         webView.addJavascriptInterface(new RecorderJavascriptBridge(transfers, networks, firmwareManager), "SLMAndroid");
@@ -467,6 +471,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 || recorderConnectionRequested || recorderReady) {
             recorderConnectionRequested = false;
             showDisconnectedRecorder = false;
+            resetRecorderCompatibilityMode();
             cancelRecorderScan();
             resetRecorderProbe();
             networks.disconnectRecorder();
@@ -480,6 +485,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private void beginRecorderScan() {
         cancelRecorderScan();
         resetRecorderProbe();
+        resetRecorderCompatibilityMode();
         recorderConnectionRequested = false;
         showDisconnectedRecorder = false;
         recorderScanPending = true;
@@ -549,23 +555,23 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                             : "No fresh SLM recorder Wi-Fi scan was available. Check that recorder Wi-Fi is on, then try Connect again.");
             return;
         }
-        ArrayList<DiscoveredRecorder> supportedRecorders = new ArrayList<>();
+        ArrayList<DiscoveredRecorder> connectableRecorders = new ArrayList<>();
         for (DiscoveredRecorder recorder : recorders) {
-            if (GliderRegistration.isSupportedRecorderSsid(recorder.ssid)) {
-                supportedRecorders.add(recorder);
+            if (GliderRegistration.isConnectableRecorderSsid(recorder.ssid)) {
+                connectableRecorders.add(recorder);
             }
         }
-        if (supportedRecorders.isEmpty()) {
+        if (connectableRecorders.isEmpty()) {
             updateConnectionUi(null, networks.uploadNetwork());
             showWifiGenerationConflict(recorders);
             return;
         }
-        if (supportedRecorders.size() == 1) {
-            connectToRecorder(supportedRecorders.get(0).ssid);
+        if (connectableRecorders.size() == 1) {
+            connectToRecorder(connectableRecorders.get(0).ssid);
             return;
         }
         updateConnectionUi(null, networks.uploadNetwork());
-        showRecorderSelection(supportedRecorders);
+        showRecorderSelection(connectableRecorders);
     }
 
 
@@ -573,7 +579,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         ArrayList<DiscoveredRecorder> incompatible = new ArrayList<>();
         for (DiscoveredRecorder recorder : recorders) {
             int generation = GliderRegistration.wifiGenerationFromSsid(recorder.ssid);
-            if (generation > 0 && generation != GliderRegistration.SUPPORTED_WIFI_GENERATION) {
+            if (generation > GliderRegistration.SUPPORTED_WIFI_GENERATION) {
                 incompatible.add(recorder);
             }
         }
@@ -597,7 +603,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         if (registrations.length() > 0) {
             message += "\n\nRecorders:\n" + registrations;
         }
-        message += "\n\nUpdate the recorder firmware and SLM Bridge before connecting.";
+        message += "\n\nUpdate SLM Bridge before connecting.";
 
         showMessageDialog("Wi-Fi version conflict", message);
     }
@@ -638,11 +644,11 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
     private void connectToRecorder(String ssid) {
         int generation = GliderRegistration.wifiGenerationFromSsid(ssid);
-        if (generation != GliderRegistration.SUPPORTED_WIFI_GENERATION) {
+        if (generation <= 0 || generation > GliderRegistration.SUPPORTED_WIFI_GENERATION) {
             showWifiGenerationConflictFor(generation);
             return;
         }
-        String password = GliderRegistration.wifiPasswordFromSsid(ssid);
+        String password = settings.wifiPasswordForRecorder(ssid);
         if (password.isEmpty()) {
             showMessageDialog("Invalid recorder Wi-Fi",
                     "The detected recorder Wi-Fi name is invalid: " + ssid);
@@ -651,6 +657,16 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         cancelRecorderScan();
         settings.selectRecorder(ssid);
         resetRecorderProbe();
+        recorderUpdateOnlyMode = generation < GliderRegistration.SUPPORTED_WIFI_GENERATION;
+        recorderLegacyPasswordAttempted = false;
+        recorderLegacyPasswordFallback = "";
+        if (recorderUpdateOnlyMode) {
+            String legacy = settings.legacyWifiPasswordForRecorder(ssid);
+            if (legacy != null && legacy.length() >= 8 && legacy.length() <= 63
+                    && !legacy.equals(password)) {
+                recorderLegacyPasswordFallback = legacy;
+            }
+        }
         showDisconnectedRecorder = false;
         recorderConnectionRequested = true;
         updateConnectionUi(null, networks.uploadNetwork());
@@ -760,6 +776,19 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
     @Override public void onRecorderConnectionUnavailable() {
         runOnUiThread(() -> {
+            if (recorderUpdateOnlyMode
+                    && !recorderLegacyPasswordAttempted
+                    && recorderLegacyPasswordFallback != null
+                    && !recorderLegacyPasswordFallback.isEmpty()) {
+                recorderLegacyPasswordAttempted = true;
+                recorderConnectionRequested = true;
+                showDisconnectedRecorder = false;
+                updateConnectionUi(null, networks.uploadNetwork());
+                Toast.makeText(this, "Retrying old recorder Wi-Fi password", Toast.LENGTH_SHORT).show();
+                networks.connect(settings.recorderSsid(), recorderLegacyPasswordFallback);
+                return;
+            }
+
             boolean wasRecorderReady = recorderReady;
             markRecorderUnavailable(settings.recorderSsid());
             recorderConnectionRequested = false;
@@ -798,6 +827,11 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                     startRecorderHealthMonitor(network);
                     updateConnectionUi(network, networks.uploadNetwork());
                     launchInterface();
+                    if (recorderUpdateOnlyMode) {
+                        showMessageDialog("Recorder update required",
+                                "This recorder uses an older Wi-Fi generation. "
+                                        + "The Bridge will allow only the Maintenance/Firmware Update path until the recorder is updated.");
+                    }
                 } else {
                     recorderReady = false;
                     recorderConnectionRequested = false;
@@ -882,6 +916,12 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         stopRecorderHealthMonitor();
         recorderProbeNetwork = null;
         recorderReady = false;
+    }
+
+    private void resetRecorderCompatibilityMode() {
+        recorderUpdateOnlyMode = false;
+        recorderLegacyPasswordFallback = "";
+        recorderLegacyPasswordAttempted = false;
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {

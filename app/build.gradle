@@ -2,7 +2,7 @@ plugins { id 'com.android.application' }
 
 android {
     namespace 'com.slm.bridge'
-    compileSdk 35
+    compileSdk 36
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -10,11 +10,11 @@ android {
     }
 
     defaultConfig {
-        applicationId 'com.slm.bridge'
+        applicationId 'com.derouineau.slmbridge'
         minSdk 29
-        targetSdk 35
-        versionCode 41
-        versionName '0.3.40'
+        targetSdk 36
+        versionCode 42
+        versionName '0.3.41'
     }
 
     buildTypes {

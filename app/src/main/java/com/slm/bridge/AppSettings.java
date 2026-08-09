@@ -17,21 +17,42 @@ final class AppSettings {
     String gliderRegistration() { return GliderRegistration.fromSsid(recorderSsid()); }
     String driveConfigurationUrl() { return recorderBaseUrl() + "/api/slm-drive-config"; }
 
+    String wifiPasswordForRecorder(String ssid) {
+        return GliderRegistration.wifiPasswordFromSsid(ssid);
+    }
+
+    /** Return a password saved by the earliest Bridge builds for old-recorder recovery. */
+    String legacyWifiPasswordForRecorder(String ssid) {
+        return legacyPasswordForSsid(ssid);
+    }
+
     void selectRecorder(String ssid) {
         String value = ssid == null ? "" : ssid.trim();
         if (!GliderRegistration.isRecorderSsid(value)) return;
         prefs.edit()
                 .putString("active_ssid", value)
-                .remove("ssid_1")
-                .remove("wifi_password_1")
-                .remove("ssid_2")
-                .remove("wifi_password_2")
                 .remove("recorder_url")
-                .remove("ssid")
-                .remove("wifi_password")
                 .remove("registration")
                 .remove("upload_url")
                 .remove("token")
                 .apply();
+    }
+
+    private String legacyPasswordForSsid(String ssid) {
+        String target = ssid == null ? "" : ssid.trim();
+        if (target.isEmpty()) return "";
+
+        String firstSsid = prefs.getString("ssid_1", prefs.getString("ssid", ""));
+        if (target.equalsIgnoreCase(firstSsid == null ? "" : firstSsid.trim())) {
+            String password = prefs.getString("wifi_password_1", prefs.getString("wifi_password", ""));
+            return password == null ? "" : password;
+        }
+
+        String secondSsid = prefs.getString("ssid_2", "");
+        if (target.equalsIgnoreCase(secondSsid == null ? "" : secondSsid.trim())) {
+            String password = prefs.getString("wifi_password_2", "");
+            return password == null ? "" : password;
+        }
+        return "";
     }
 }

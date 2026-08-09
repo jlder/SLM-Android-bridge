@@ -8,8 +8,8 @@ final class GliderRegistration {
     static final int SUPPORTED_WIFI_GENERATION = 2;
 
     // Generation 1 used SLM-FCJAF. Generation 2 and later use SLM2-FCJAF,
-    // SLM3-FCJAF, etc. Older/newer generations are recognized for diagnosis
-    // but only the supported generation is connectable.
+    // SLM3-FCJAF, etc. Older generations remain connectable only as a firmware
+    // recovery path; newer generations require a newer Bridge.
     private static final Pattern RECORDER_SSID =
             Pattern.compile("SLM(?:(\\d+))?-([A-Z0-9]{5})");
     private static final Pattern EMBEDDED = Pattern.compile("([A-Z0-9]{1,3}-[A-Z0-9]{2,8})");
@@ -24,6 +24,11 @@ final class GliderRegistration {
 
     static boolean isSupportedRecorderSsid(String ssid) {
         return wifiGenerationFromSsid(ssid) == SUPPORTED_WIFI_GENERATION;
+    }
+
+    static boolean isConnectableRecorderSsid(String ssid) {
+        int generation = wifiGenerationFromSsid(ssid);
+        return generation > 0 && generation <= SUPPORTED_WIFI_GENERATION;
     }
 
     static int wifiGenerationFromSsid(String ssid) {
@@ -45,7 +50,7 @@ final class GliderRegistration {
     }
 
     static String wifiPasswordFromSsid(String ssid) {
-        if (!isSupportedRecorderSsid(ssid)) return "";
+        if (!isConnectableRecorderSsid(ssid)) return "";
         String compact = compactFromRecorderSsid(ssid);
         if (compact.isEmpty()) return "";
         return "SLM" + new StringBuilder(compact).reverse();
