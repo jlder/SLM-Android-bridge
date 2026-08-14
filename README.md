@@ -255,3 +255,8 @@ uploaded and does not change transfer or integrity decisions.
 - Displays the installed Bridge version below the `SLM / BRIDGE` title.
 - Slightly reduces the main title font to preserve header spacing.
 - Retains the hidden five-tap diagnostics trigger on the large title.
+
+
+## v0.3.44 — live queue-total refresh
+
+When analysis completes for an additional recorder file while a previous file is already being uploaded, the Bridge immediately republishes the queue status. The active `File Queue <current>/<total>` display therefore expands as soon as newly processed files become upload-ready (for example `1/1` -> `1/2` -> `1/3`) instead of waiting for a later upload-progress, network-change, or STOP refresh event. Transfer order and upload behavior are unchanged.

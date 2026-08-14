@@ -187,6 +187,11 @@ final class TransferManager {
                 TransferStore.Item item = store.get(transferId);
                 if (item == null) return;
                 store.markAnalysisComplete(item);
+                // A newly analysed file has just joined the upload queue. If another
+                // file is already uploading, republish immediately so File Queue
+                // expands from e.g. 1/1 to 1/2 or 1/3 without waiting for a later
+                // upload-progress, network-change, or STOP refresh event.
+                publishQueueSnapshot(null);
                 requestUploadRetry();
                 schedulePendingArchives();
             } catch (Exception e) {

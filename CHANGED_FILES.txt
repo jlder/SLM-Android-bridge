@@ -1,5 +1,5 @@
-app/build.gradle
-app/src/main/java/com/slm/bridge/MainActivity.java
-app/src/main/res/layout/activity_main.xml
-README.md
-VALIDATION-v0.3.40.md
+SLM Bridge v0.3.43 -> v0.3.44
+- app/build.gradle: versionCode 44 -> 45; versionName 0.3.43 -> 0.3.44
+- app/src/main/java/com/slm/bridge/TransferManager.java: immediately republish queue status when another analysed recorder file becomes upload-ready
+- README.md: documents live queue-total refresh
+- VALIDATION.md: current baseline title/scope updated to v0.3.44 and multi-file queue-total validation retained

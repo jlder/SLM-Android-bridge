@@ -1,8 +1,8 @@
-# SLM Bridge v0.3.32 validation
+# SLM Bridge v0.3.44 validation
 
 ## Scope
 
-This release adds Google Drive stored-file verification after upload. It does not change recorder SHA metadata, browser analysis, or File Management grouping.
+This validation file covers the current SLM Bridge v0.3.44 baseline. The v0.3.44 change is the live queue-total refresh when additional recorder files complete analysis and become upload-ready; the earlier integrity, durable-queue, upload-verification, and recorder-archive checks remain applicable.
 
 ## Normal immutable file
 
@@ -45,3 +45,12 @@ This release adds Google Drive stored-file verification after upload. It does no
 ## v0.3.36 — recorder archive endpoint
 
 Confirm a verified upload is archived through `POST /api/archive` and that queue retry behavior remains unchanged.
+
+
+## v0.3.44 — live queue-total refresh
+
+1. Process a recorder day containing at least three physical `.bin` files while Internet upload is available.
+2. While the first file is still uploading, allow the second and third files to complete recorder transfer and browser analysis.
+3. Confirm the Bridge queue display expands immediately as each analysed file becomes upload-ready, e.g. `File Queue 1/1` -> `File Queue 1/2` -> `File Queue 1/3`, without pressing STOP or causing a network change.
+4. Confirm the current-file position continues to advance normally as uploads complete and no file is uploaded twice.
+5. Repeat with Internet temporarily unavailable and confirm queued items remain durable and upload normally when Internet returns.

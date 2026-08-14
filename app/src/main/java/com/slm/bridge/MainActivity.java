@@ -12,6 +12,7 @@ import android.content.res.ColorStateList;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.location.LocationManager;
 import android.net.Network;
 import android.net.Uri;
 import android.net.wifi.ScanResult;
@@ -21,6 +22,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.util.Log;
 import android.graphics.Insets;
 import android.view.View;
@@ -62,7 +64,6 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private static final int COLOR_GREEN = Color.rgb(142, 214, 82);
     private static final int COLOR_AMBER = Color.rgb(255, 196, 0);
     private static final int COLOR_STATUS_BLINK_DIM = Color.rgb(80, 80, 80);
-    private static final long RECORDER_SCAN_SETTLE_MS = 2_000L;
     private static final long RECORDER_SCAN_FRESH_TIMEOUT_MS = 8_000L;
     private static final long RECORDER_SCAN_FRESH_MARGIN_MS = 10_000L;
     private static final long RECORDER_SCAN_MAX_AGE_MS = 60_000L;
@@ -90,6 +91,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private boolean recorderConnectionRequested;
     private boolean recorderScanPending;
     private boolean recorderScanReceiverRegistered;
+    private boolean resumeRecorderConnectAfterLocationSettings;
     private boolean debugBuild;
     private long recorderScanStartedMs;
     private int recorderHealthFailures;
@@ -155,6 +157,16 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         });
         bridgeTitle.setOnClickListener(v -> onBridgeTitleTapped());
         updateConnectionUi(networks.recorderNetwork(), networks.uploadNetwork());
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (!resumeRecorderConnectAfterLocationSettings) return;
+
+        resumeRecorderConnectAfterLocationSettings = false;
+        if (hasRecorderConnectionPermission() && isSystemLocationEnabled()) {
+            mainHandler.post(this::beginRecorderScan);
+        }
     }
 
 
@@ -483,6 +495,11 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
     @SuppressWarnings("deprecation")
     private void beginRecorderScan() {
+        if (!isSystemLocationEnabled()) {
+            showLocationRequiredDialog();
+            return;
+        }
+
         cancelRecorderScan();
         resetRecorderProbe();
         resetRecorderCompatibilityMode();
@@ -504,9 +521,17 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             }
             registerRecorderScanReceiver(generation);
             boolean requested = false;
-            try { requested = wifi.startScan(); } catch (RuntimeException ignored) {}
-            long fallbackDelay = requested ? RECORDER_SCAN_FRESH_TIMEOUT_MS : RECORDER_SCAN_SETTLE_MS;
-            mainHandler.postDelayed(() -> finishRecorderScan(generation, false), fallbackDelay);
+            try {
+                requested = wifi.startScan();
+            } catch (RuntimeException error) {
+                Log.w(LOG_TAG, "Wi-Fi scan request failed", error);
+            }
+            if (!requested) {
+                Log.w(LOG_TAG, "Wi-Fi scan request was not accepted; trying recent cached results");
+            }
+            mainHandler.postDelayed(
+                    () -> finishRecorderScan(generation, false),
+                    RECORDER_SCAN_FRESH_TIMEOUT_MS);
         } catch (SecurityException security) {
             recorderScanPending = false;
             unregisterRecorderScanReceiver();
@@ -523,7 +548,11 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 if (generation != recorderScanGeneration.get() || !recorderScanPending) return;
                 boolean updated = intent != null
                         && intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, false);
-                finishRecorderScan(generation, updated);
+                if (!updated) {
+                    Log.d(LOG_TAG, "Ignoring Wi-Fi scan broadcast without updated results");
+                    return;
+                }
+                finishRecorderScan(generation, true);
             }
         };
         IntentFilter filter = new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
@@ -549,10 +578,12 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         List<DiscoveredRecorder> recorders = scanSlmRecorders(!freshResultsAvailable);
         if (recorders.isEmpty()) {
             updateConnectionUi(null, networks.uploadNetwork());
-            showMessageDialog("Recorder not found",
-                    freshResultsAvailable
-                            ? "No SLM recorder Wi-Fi was found. Check that recorder Wi-Fi is on, then try Connect again."
-                            : "No fresh SLM recorder Wi-Fi scan was available. Check that recorder Wi-Fi is on, then try Connect again.");
+            if (!freshResultsAvailable) {
+                showScanTemporarilyUnavailableDialog();
+            } else {
+                showMessageDialog("Recorder not found",
+                        "No SLM recorder Wi-Fi was found. Check that recorder Wi-Fi is on, then try Connect again.");
+            }
             return;
         }
         ArrayList<DiscoveredRecorder> connectableRecorders = new ArrayList<>();
@@ -1064,6 +1095,41 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             return;
         }
         webView.loadUrl(settings.recorderBaseUrl());
+    }
+
+    private boolean isSystemLocationEnabled() {
+        LocationManager location = getSystemService(LocationManager.class);
+        return location != null && location.isLocationEnabled();
+    }
+
+    private void showLocationRequiredDialog() {
+        if (isFinishing() || isDestroyed()) return;
+        resumeRecorderConnectAfterLocationSettings = false;
+        new AlertDialog.Builder(this)
+                .setTitle("Location must be enabled")
+                .setMessage("Android requires system Location to be enabled so SLM Bridge can discover nearby recorder Wi-Fi networks.\n\nSLM Bridge does not use or record your geographical position.")
+                .setNegativeButton("CANCEL", null)
+                .setPositiveButton("LOCATION SETTINGS", (dialog, which) -> {
+                    resumeRecorderConnectAfterLocationSettings = true;
+                    try {
+                        startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
+                    } catch (ActivityNotFoundException error) {
+                        resumeRecorderConnectAfterLocationSettings = false;
+                        showMessageDialog("Location settings unavailable",
+                                "Open Android Settings and enable Location, then press Connect again.");
+                    }
+                })
+                .show();
+    }
+
+    private void showScanTemporarilyUnavailableDialog() {
+        if (isFinishing() || isDestroyed()) return;
+        new AlertDialog.Builder(this)
+                .setTitle("Wi-Fi scan temporarily unavailable")
+                .setMessage("Android could not start a new Wi-Fi scan. Please try again.")
+                .setNegativeButton("CANCEL", null)
+                .setPositiveButton("RETRY", (dialog, which) -> requestPermissionAndConnect())
+                .show();
     }
 
     private boolean hasRecorderConnectionPermission() {
