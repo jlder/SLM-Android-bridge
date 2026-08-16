@@ -149,7 +149,7 @@ final class TransferManager {
                 if (!normalized.startsWith(prefix)
                         || normalized.substring(prefix.length()).contains("/")
                         || normalized.contains("..")) {
-                    throw new SecurityException("Calibration report path is not allowed");
+                    throw new SecurityException(context.getString(R.string.calibration_report_path_not_allowed));
                 }
                 String filename = validateFilename(normalized.substring(prefix.length()));
                 String encoded = URLEncoder.encode(normalized, StandardCharsets.UTF_8.name())
@@ -188,7 +188,7 @@ final class TransferManager {
                 if (item == null) return;
                 store.markAnalysisComplete(item);
                 // A newly analysed file has just joined the upload queue. If another
-                // file is already uploading, republish immediately so File Queue
+                // file is already uploading, republish immediately so File queue
                 // expands from e.g. 1/1 to 1/2 or 1/3 without waiting for a later
                 // upload-progress, network-change, or STOP refresh event.
                 publishQueueSnapshot(null);
@@ -231,7 +231,7 @@ final class TransferManager {
             boolean upload = request.optBoolean("upload", true);
             String registration = settings.gliderRegistration();
             if (registration.isEmpty()) {
-                throw new IllegalStateException("The recorder SSID does not contain a glider registration");
+                throw new IllegalStateException(context.getString(R.string.recorder_registration_missing_ssid));
             }
             item = store.create(filename, registration, upload);
             emit(item, "download-started", 0, null);
@@ -267,11 +267,11 @@ final class TransferManager {
             String filename = validateFilename(request.filename);
             String registration = settings.gliderRegistration();
             if (registration.isEmpty()) {
-                throw new IllegalStateException("The recorder SSID does not contain a glider registration");
+                throw new IllegalStateException(context.getString(R.string.recorder_registration_missing_ssid));
             }
             if (!RecorderUrlPolicy.isAllowed(request.url, settings.recorderBaseUrl())
                     || !RecorderUrlPolicy.isCalibrationReportDownload(request.url)) {
-                throw new SecurityException("Calibration report URL is not allowed");
+                throw new SecurityException(context.getString(R.string.calibration_report_url_not_allowed));
             }
 
             item = store.createReport(filename, registration);
@@ -300,7 +300,7 @@ final class TransferManager {
                 Thread.sleep(200L * attempt);
             }
         }
-        throw last == null ? new IllegalStateException("Calibration report download failed") : last;
+        throw last == null ? new IllegalStateException(context.getString(R.string.calibration_report_download_failed)) : last;
     }
 
     private RecorderShaMetadata fetchRecorderShaMetadata(String filename) throws Exception {
@@ -309,7 +309,7 @@ final class TransferManager {
         String encoded = URLEncoder.encode(shaFilename, StandardCharsets.UTF_8.name()).replace("+", "%20");
         URL url = new URL(settings.recorderBaseUrl() + "/api/download?file=" + encoded);
         Network network = networks.recorderNetwork();
-        if (network == null) throw new IllegalStateException("Recorder Wi-Fi is unavailable");
+        if (network == null) throw new IllegalStateException(context.getString(R.string.recorder_wifi_unavailable));
 
         HttpURLConnection connection = (HttpURLConnection) network.openConnection(url);
         connection.setInstanceFollowRedirects(false);
@@ -320,17 +320,17 @@ final class TransferManager {
             int status = connection.getResponseCode();
             if (status == HttpURLConnection.HTTP_NOT_FOUND) return null;
             if (status / 100 != 2) {
-                throw new IllegalStateException("Recorder SHA metadata returned HTTP " + status);
+                throw new IllegalStateException(context.getString(R.string.recorder_sha_http_error, status));
             }
             long length = connection.getContentLengthLong();
-            if (length > 4096) throw new IllegalStateException("Recorder SHA metadata is too large");
+            if (length > 4096) throw new IllegalStateException(context.getString(R.string.recorder_sha_too_large));
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             try (InputStream in = new BufferedInputStream(connection.getInputStream())) {
                 byte[] buffer = new byte[512];
                 int count;
                 while ((count = in.read(buffer)) >= 0) {
                     if (out.size() + count > 4096) {
-                        throw new IllegalStateException("Recorder SHA metadata is too large");
+                        throw new IllegalStateException(context.getString(R.string.recorder_sha_too_large));
                     }
                     out.write(buffer, 0, count);
                 }
@@ -341,7 +341,7 @@ final class TransferManager {
         }
     }
 
-    private static RecorderShaMetadata parseRecorderShaMetadata(String requestedFilename,
+    private RecorderShaMetadata parseRecorderShaMetadata(String requestedFilename,
                                                                  String text) {
         String format = "";
         String filename = "";
@@ -351,7 +351,7 @@ final class TransferManager {
             String line = rawLine.trim();
             if (line.isEmpty()) continue;
             int separator = line.indexOf('=');
-            if (separator <= 0) throw new IllegalStateException("Invalid recorder SHA metadata");
+            if (separator <= 0) throw new IllegalStateException(context.getString(R.string.recorder_sha_invalid));
             String key = line.substring(0, separator).trim();
             String value = line.substring(separator + 1).trim();
             if ("format".equals(key)) format = value;
@@ -360,27 +360,27 @@ final class TransferManager {
             else if ("sha256".equals(key)) sha256 = value.toLowerCase(Locale.US);
         }
         if (!"1".equals(format) || !requestedFilename.equals(filename)) {
-            throw new IllegalStateException("Recorder SHA metadata does not match the file");
+            throw new IllegalStateException(context.getString(R.string.recorder_sha_mismatch));
         }
         long size;
         try {
             size = Long.parseLong(sizeText);
         } catch (NumberFormatException e) {
-            throw new IllegalStateException("Recorder SHA metadata has an invalid size");
+            throw new IllegalStateException(context.getString(R.string.recorder_sha_invalid_size));
         }
         if (size < 0 || !sha256.matches("[0-9a-f]{64}")) {
-            throw new IllegalStateException("Recorder SHA metadata is invalid");
+            throw new IllegalStateException(context.getString(R.string.recorder_sha_invalid));
         }
         return new RecorderShaMetadata(filename, size, sha256);
     }
 
-    private static void verifyRecorderSha(String filename, RecorderShaMetadata expected,
+    private void verifyRecorderSha(String filename, RecorderShaMetadata expected,
                                            DownloadResult downloaded) {
         if (downloaded.size != expected.size) {
-            throw new IllegalStateException("Recorder file size changed since creation: " + filename);
+            throw new IllegalStateException(context.getString(R.string.recorder_file_size_changed, filename));
         }
         if (!downloaded.sha256.equalsIgnoreCase(expected.sha256)) {
-            throw new IllegalStateException("Recorder file SHA changed since creation: " + filename);
+            throw new IllegalStateException(context.getString(R.string.recorder_file_sha_changed, filename));
         }
     }
 
@@ -394,9 +394,9 @@ final class TransferManager {
     private String downloadFromUrl(TransferStore.Item item, String sourceUrl, String mimeType,
                                    String userAgent, String cookie) throws Exception {
         Network network = networks.recorderNetwork();
-        if (network == null) throw new IllegalStateException("Recorder Wi-Fi is unavailable");
+        if (network == null) throw new IllegalStateException(context.getString(R.string.recorder_wifi_unavailable));
         if (!RecorderUrlPolicy.isAllowed(sourceUrl, settings.recorderBaseUrl())) {
-            throw new SecurityException("Recorder download URL is outside the allowed origin");
+            throw new SecurityException(context.getString(R.string.recorder_download_url_not_allowed));
         }
 
         URL current = new URL(sourceUrl);
@@ -420,18 +420,18 @@ final class TransferManager {
             String location = connection.getHeaderField("Location");
             connection.disconnect();
             connection = null;
-            if (location == null) throw new IllegalStateException("Recorder returned an invalid redirect");
+            if (location == null) throw new IllegalStateException(context.getString(R.string.recorder_invalid_redirect));
             current = new URL(current, location);
             if (!RecorderUrlPolicy.isAllowed(current.toString(), settings.recorderBaseUrl())) {
-                throw new SecurityException("Recorder download redirected outside the allowed origin");
+                throw new SecurityException(context.getString(R.string.recorder_redirect_outside_origin));
             }
         }
 
-        if (connection == null) throw new IllegalStateException("Too many recorder redirects");
+        if (connection == null) throw new IllegalStateException(context.getString(R.string.too_many_recorder_redirects));
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         try {
             int status = connection.getResponseCode();
-            if (status / 100 != 2) throw new IllegalStateException("Recorder returned HTTP " + status);
+            if (status / 100 != 2) throw new IllegalStateException(context.getString(R.string.recorder_http_error, status));
             long total = connection.getContentLengthLong();
             long copied = 0;
             try (InputStream in = new BufferedInputStream(connection.getInputStream());
@@ -452,7 +452,7 @@ final class TransferManager {
                 }
             }
             if (total >= 0 && item.file.length() != total) {
-                throw new IllegalStateException("Incomplete recorder download");
+                throw new IllegalStateException(context.getString(R.string.recorder_download_incomplete));
             }
             return hex(digest.digest());
         } finally {
@@ -477,7 +477,7 @@ final class TransferManager {
                 return;
             }
             if (networks.uploadNetwork() == null) {
-                emit(item, "upload-pending", 0, "Waiting for Internet");
+                emit(item, "upload-pending", 0, context.getString(R.string.waiting_for_internet));
                 publishQueueSnapshot(null);
                 return;
             }
@@ -492,8 +492,8 @@ final class TransferManager {
                 clearActiveUpload();
                 emit(item, "upload-pending", 0,
                         networks.recorderNetwork() == null
-                                ? "Reconnect to the recorder to obtain Drive authorization"
-                                : "Recorder Drive authorization is unavailable");
+                                ? context.getString(R.string.drive_reconnect_authorization)
+                                : context.getString(R.string.drive_authorization_unavailable));
                 publishQueueSnapshot("Drive authorization unavailable");
                 return;
             }
@@ -552,7 +552,7 @@ final class TransferManager {
             return;
         }
         if (networks.uploadNetwork() == null) {
-            emitPendingError("Waiting for Internet");
+            emitPendingError(context.getString(R.string.waiting_for_internet));
             publishQueueSnapshot(null);
             return;
         }
@@ -565,7 +565,7 @@ final class TransferManager {
             return;
         }
         if (credentials == null) {
-            emitPendingError("Reconnect to the recorder to obtain Drive authorization");
+            emitPendingError(context.getString(R.string.drive_reconnect_authorization));
             publishQueueSnapshot("Drive authorization unavailable");
             return;
         }
@@ -787,10 +787,10 @@ final class TransferManager {
         } catch (Exception ignored) {}
     }
 
-    private static String validateFilename(String value) {
+    private String validateFilename(String value) {
         if (value == null || value.isEmpty() || value.length() > 160 || value.contains("/")
                 || value.contains("\\") || value.contains("..") || value.indexOf('\0') >= 0) {
-            throw new IllegalArgumentException("Invalid recorder filename");
+            throw new IllegalArgumentException(context.getString(R.string.invalid_recorder_filename));
         }
         return value;
     }
@@ -801,8 +801,10 @@ final class TransferManager {
         return result.toString();
     }
 
-    private static String message(Exception error) {
+    private String message(Exception error) {
         String value = error.getMessage();
-        return value == null || value.trim().isEmpty() ? error.getClass().getSimpleName() : value;
+        String message = value == null || value.trim().isEmpty()
+                ? error.getClass().getSimpleName() : value;
+        return BridgeErrorText.localize(context, message);
     }
 }

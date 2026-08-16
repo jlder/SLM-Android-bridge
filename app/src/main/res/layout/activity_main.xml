@@ -29,8 +29,8 @@
             android:autoSizeStepGranularity="1sp"
             android:autoSizeTextType="uniform"
             android:gravity="center"
-            android:maxLines="2"
-            android:text="No\nRecorder"
+            android:maxLines="3"
+            android:text="@string/status_no_recorder"
             android:textColor="#FFC400"
             android:includeFontPadding="false"
             android:textAlignment="center"
@@ -56,7 +56,7 @@
                 android:gravity="center"
                 android:includeFontPadding="false"
                 android:maxLines="2"
-                android:text="SLM\nBRIDGE"
+                android:text="@string/bridge_title"
                 android:textAlignment="center"
                 android:textColor="#FFFFFF"
                 android:textSize="22sp"
@@ -69,7 +69,7 @@
                 android:gravity="center"
                 android:includeFontPadding="false"
                 android:maxLines="1"
-                android:text="v0.3.40"
+                android:text="v0.3.44"
                 android:textAlignment="center"
                 android:textColor="#FFFFFF"
                 android:textSize="10sp" />
@@ -86,7 +86,7 @@
             android:autoSizeTextType="uniform"
             android:gravity="center"
             android:maxLines="2"
-            android:text="Server\nOff-line"
+            android:text="@string/server_offline"
             android:textColor="#FFC400"
             android:includeFontPadding="false"
             android:textAlignment="center"
@@ -111,7 +111,7 @@
             android:layout_height="wrap_content"
             android:minWidth="0dp"
             android:singleLine="true"
-            android:text="CONNECT" />
+            android:text="@string/button_connect" />
     </LinearLayout>
 
     <TextView
@@ -128,7 +128,7 @@
         android:minHeight="22dp"
         android:paddingStart="8dp"
         android:paddingEnd="8dp"
-        android:text="File upload None        File Queue Empty"
+        android:text="@string/file_queue_empty"
         android:textColor="#000000"
         android:textSize="14sp"
         android:textStyle="bold" />

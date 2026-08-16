@@ -35,11 +35,12 @@ Android supplies network routing, durable storage, and cellular upload.
   registration, for example `SLMFAJCF`. No recorder SSID/password setup menu is
   required.
 - Simplified bridge header: black header with centered recorder status on the left, fixed white two-line `SLM / BRIDGE` title in the center, centered server status on the right, and one centered blue **CONNECT/STOP** button.
-- Connection-state feedback in the left recorder-status field: `No / Recorder` before connection, blinking `Searching / Recorder` during Wi-Fi discovery, blinking `Connecting / F-CJAF` while joining/probing the recorder, and steady `F-CJAF / Connected` after the recorder answers.
+- Connection-state feedback in the left recorder-status field: `No / Recorder` before connection, blinking `Searching / Recorder` during Wi-Fi discovery, blinking `Connecting / F-CJAF` while Android is joining the recorder Wi-Fi, blinking `F-CJAF / Waiting / for recorder` after the Wi-Fi network is available but before `/api/status` answers, and steady `F-CJAF / Connected` after the recorder answers.
 - Periodic recorder health checks after connection. If the recorder Wi-Fi or Web
   service disappears, the bridge disconnects, clears the WebView, and returns to
   `No / Recorder`.
-- Server status is shown in the right header field as `Server / Off-line` or `Server / Connected`. The compact line below CONNECT/STOP shows `File Queue Empty`, `File Queue: n files waiting`, or `Transferring File (x/y)` with a progress bar during file transfer.
+- Server status is shown in the right header field as `Server / Off-line` or `Server / Connected`. The compact line below CONNECT/STOP shows upload and queue state together, for example `File upload: none        File queue: empty` or `File upload: 45%        File queue: 1/3`, with a progress bar during file transfer.
+  On phones using French, the normal Bridge UI and user-facing messages are displayed in French (for example `Envoi fichier: aucun        File d’attente: vide`); English is used for all other phone languages. Integrity diagnostics remain in English.
   The server side uses an explicitly selected validated Internet network and is
   kept separate from the local recorder Wi-Fi network used by the WebView.
 
@@ -65,7 +66,7 @@ end-to-end testing with the recorder endpoint and target Drive account.
 
 The app deliberately remains disconnected on startup. **CONNECT** performs recorder
 discovery and connection in one operator action. Before **CONNECT** is pressed, the
-left recorder status shows `No / Recorder`. After **CONNECT**, it shows blinking `Searching / Recorder` while Android is asked to refresh Wi-Fi scan results. After a recorder SSID is selected, it shows blinking `Connecting / F-CJAF` while Android associates with the recorder and the bridge waits for `/api/status`. When the recorder answers, the app opens the recorder interface automatically and the left status becomes `F-CJAF / Connected`. Pressing **STOP** returns the left status to `No / Recorder`. If the recorder disappears after connection without the user pressing STOP, periodic health checks show `F-CJAF / Disconnected` and clear the stale WebView page.
+left recorder status shows `No / Recorder`. After **CONNECT**, it shows blinking `Searching / Recorder` while Android is asked to refresh Wi-Fi scan results. After a recorder SSID is selected, it shows blinking `Connecting / F-CJAF` while Android associates with the recorder. Once Android provides the recorder Wi-Fi network, the status changes to blinking `F-CJAF / Waiting / for recorder` while the Bridge waits for `/api/status`. When the recorder answers, the app opens the recorder interface automatically and the left status becomes `F-CJAF / Connected`. Pressing **STOP** returns the left status to `No / Recorder`. If the recorder disappears after connection without the user pressing STOP, periodic health checks show `F-CJAF / Disconnected` and clear the stale WebView page.
 
 Recorder transfers are streamed into app-private phone storage and recorded in a
 durable queue before upload. When cellular data is ready, the app refreshes a
@@ -222,8 +223,8 @@ After the recorder/Bridge SHA-256 check, the Bridge verifies the copy stored in 
 ## v0.3.35 — compact transfer status
 
 - The Bridge transfer information is displayed on one line.
-- The left field reports `File upload <percent>%` or `File upload None`.
-- The right field reports `File Queue <current>/<total>` or `File Queue Empty`.
+- The current UI presents the two values as `File upload: <percent>%        File queue: <current>/<total>` or `File upload: none        File queue: empty`.
+- On French phones the corresponding display is `Envoi fichier: <percent> %        File d’attente: <current>/<total>` or `Envoi fichier: aucun        File d’attente: vide`.
 - Upload and queue behavior are unchanged.
 
 ## v0.3.36 recorder archive endpoint
@@ -257,6 +258,46 @@ uploaded and does not change transfer or integrity decisions.
 - Retains the hidden five-tap diagnostics trigger on the large title.
 
 
+## v0.3.42 — Android Location prerequisite for Wi-Fi discovery
+
+Android Wi-Fi scan APIs require system Location services to be enabled on the supported connection path, even when the Bridge already has the required app permissions. Before starting recorder discovery, the Bridge now checks `LocationManager.isLocationEnabled()`. If Location is off, it displays **Location must be enabled**, explains that Android requires Location for nearby Wi-Fi discovery and that SLM Bridge does not use or record the geographical position, and provides a **LOCATION SETTINGS** button. Returning from Settings with Location enabled automatically resumes recorder discovery.
+
+## v0.3.43 — reliable fresh recorder scan and retry
+
+Recorder discovery no longer treats whatever `getScanResults()` happens to contain immediately after CONNECT as a completed scan. The Bridge requests a fresh Wi-Fi scan and waits for `SCAN_RESULTS_AVAILABLE_ACTION` with updated results, with an 8-second fallback timeout. If Android throttles or refuses the new scan, recent cached results may be used for up to 60 seconds; recorder SSIDs that have just failed to connect are temporarily suppressed so a stopped recorder is not immediately re-offered from stale data. If no fresh scan can be obtained and no suitable recent result is available, the Bridge displays **Wi-Fi scan temporarily unavailable** with a **RETRY** action instead of immediately reporting that no recorder exists. A genuine fresh scan containing no SLM recorder still reports **Recorder not found** and asks the user to check that recorder Wi-Fi is on before trying CONNECT again.
+
 ## v0.3.44 — live queue-total refresh
 
 When analysis completes for an additional recorder file while a previous file is already being uploaded, the Bridge immediately republishes the queue status. The active `File Queue <current>/<total>` display therefore expands as soon as newly processed files become upload-ready (for example `1/1` -> `1/2` -> `1/3`) instead of waiting for a later upload-progress, network-change, or STOP refresh event. Transfer order and upload behavior are unchanged.
+
+## v0.3.45 — French/English UI localization and cleanup
+
+- Uses Android resource localization: French is selected automatically when the phone/app locale is French; English is the fallback for every other language.
+- Localizes normal user-facing Bridge status, connection, Wi-Fi/location, file-transfer, download, and firmware messages. `SLM BRIDGE`, registrations, SSIDs, filenames, versions, API/state identifiers, and integrity diagnostics remain language-independent/English as appropriate.
+- Removes the obsolete fallback that retried a historical stored recorder Wi-Fi password. Recorder Wi-Fi authentication now uses only the password derived from the detected recorder SSID. The old-recorder firmware-update-only compatibility path is unchanged.
+- Changes the abnormal `File selection in progress` and `Recorder not ready` notifications from transient Toasts to acknowledged dialogs.
+- Uses the explicit compact status wording `File upload: ...        File queue: ...` / `Envoi fichier: ...        File d’attente: ...`, with preserved spacing between the two fields.
+- Retains the v0.3.44 live queue-total refresh so the displayed total updates immediately when another analysed file becomes upload-ready.
+
+## v0.3.46 — recorder reachability / VPN diagnostics
+
+- Distinguishes Android Wi-Fi association from recorder HTTP readiness in both the status field and persistent diagnostics: `CONNECT_REQUEST` -> `RECORDER_NETWORK_AVAILABLE` -> `WAITING_FOR_RECORDER` -> `RECORDER_READY` or `RECORDER_UNREACHABLE`.
+- Shows a blinking recorder waiting state after Android has provided the recorder Wi-Fi but before `/api/status` responds.
+- Detects whether an Android VPN transport is active. If recorder Wi-Fi is connected but the recorder remains unreachable and a VPN is active, the Bridge displays an acknowledged VPN-specific message advising the user to disable the VPN temporarily or allow SLM Bridge local-network access.
+- Reuses the existing persistent service diagnostics log; new network/HTTP events use `src=NET` and `src=HTTP`, while integrity-chain records now use `src=INTEGRITY`. No Wi-Fi passwords, OAuth tokens, or other credentials are logged.
+
+## v0.3.47 — OTA connection protection
+
+Version 0.3.47 protects the recorder Wi-Fi connection while firmware OTA is active. The normal 3 s recorder health monitor no longer issues `/api/status` probes while an OTA transaction or its post-completion grace period is active, and a health probe that races with OTA completion is ignored rather than disconnecting the recorder network.
+
+Both OTA paths are covered. Firmware from Server is tracked directly inside `FirmwareManager`; phone-selected firmware is detected by a Bridge-injected XMLHttpRequest monitor around `POST /api/ota`, so the protection also works while updating older recorder firmware that predates this Bridge feature. The OTA tracker keeps a 20 s post-completion grace period to cover the final HTTP acknowledgement and expected recorder reboot. Diagnostic events use `src=OTA`, while recorder network loss during this protected period is logged with `expected_reboot=true`.
+
+
+## v0.3.48 — three-line recorder-waiting status
+
+Version 0.3.48 changes only the presentation of the intermediate recorder-waiting state. After Android has established the recorder Wi-Fi network but before `/api/status` responds, the left status is displayed on three short lines so Android auto-sizing can retain the normal larger recorder-status font:
+
+- English: `F-CJAF` / `Waiting` / `for recorder`
+- French: `F-CJAF` / `Attente` / `Enregistreur`
+
+Connection logic, VPN detection, diagnostics, and the v0.3.47 OTA health-monitor protection are unchanged.

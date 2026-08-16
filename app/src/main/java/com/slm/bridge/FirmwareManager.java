@@ -42,6 +42,7 @@ final class FirmwareManager {
     private final RecorderDriveCredentialsClient credentialClient;
     private final WebView webView;
     private final Context context;
+    private final OtaActivityTracker otaActivity;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final AtomicBoolean busy = new AtomicBoolean();
@@ -50,23 +51,25 @@ final class FirmwareManager {
     private long accessTokenExpiry;
 
     FirmwareManager(NetworkCoordinator networks, AppSettings settings,
-                    DriveCredentialStore credentialStore, WebView webView) {
+                    DriveCredentialStore credentialStore, WebView webView,
+                    OtaActivityTracker otaActivity) {
         this.networks = networks;
         this.settings = settings;
         this.credentialStore = credentialStore;
         this.credentialClient = new RecorderDriveCredentialsClient(networks, settings);
         this.webView = webView;
         this.context = webView.getContext().getApplicationContext();
+        this.otaActivity = otaActivity;
     }
 
     void listServerFirmware() {
         if (!busy.compareAndSet(false, true)) {
-            emit("busy", 0, "Firmware server operation already running", null);
+            emit("busy", 0, context.getString(R.string.firmware_operation_busy), null);
             return;
         }
         executor.execute(() -> {
             try {
-                emit("listing", 0, "Searching firmware from server", null);
+                emit("listing", 0, context.getString(R.string.firmware_searching_server), null);
                 FirmwareList list = fetchFirmwareList();
                 synchronized (cachedFiles) {
                     cachedFiles.clear();
@@ -87,7 +90,7 @@ final class FirmwareManager {
 
     void installServerFirmware(String requestJson) {
         if (!busy.compareAndSet(false, true)) {
-            emit("busy", 0, "Firmware server operation already running", null);
+            emit("busy", 0, context.getString(R.string.firmware_operation_busy), null);
             return;
         }
         executor.execute(() -> {
@@ -95,22 +98,28 @@ final class FirmwareManager {
             try {
                 JSONObject request = new JSONObject(requestJson == null ? "{}" : requestJson);
                 FirmwareFile selected = findCachedFile(request.optString("id"), request.optString("name"));
-                if (selected == null) throw new IllegalArgumentException("Select a server firmware file first");
+                if (selected == null) throw new IllegalArgumentException(context.getString(R.string.firmware_select_file_first));
 
                 DriveCredentials credentials = availableCredentials();
                 if (credentials == null) {
-                    throw new IllegalStateException("Reconnect to the recorder to obtain Drive authorization");
+                    throw new IllegalStateException(context.getString(R.string.drive_reconnect_authorization));
                 }
                 Network internet = requireInternet();
                 String token = accessToken(internet, credentials);
-                emit("downloading", 0, "Downloading " + selected.name + " from server", null);
+                emit("downloading", 0, context.getString(R.string.firmware_downloading_file, selected.name), null);
                 downloaded = downloadFirmware(internet, token, selected);
 
                 Network recorder = networks.recorderNetwork();
-                if (recorder == null) throw new IllegalStateException("Recorder Wi-Fi is unavailable");
-                emit("uploading", 0, "Uploading firmware to recorder", null);
-                String response = uploadToRecorder(recorder, selected, downloaded);
-                emit("complete", 100, response.isEmpty() ? "Firmware update OK. Rebooting..." : response, null);
+                if (recorder == null) throw new IllegalStateException(context.getString(R.string.recorder_wifi_unavailable));
+                emit("uploading", 0, context.getString(R.string.firmware_uploading_recorder), null);
+                String response;
+                if (otaActivity != null) otaActivity.begin("SERVER");
+                try {
+                    response = uploadToRecorder(recorder, selected, downloaded);
+                } finally {
+                    if (otaActivity != null) otaActivity.finish("SERVER");
+                }
+                emit("complete", 100, response.isEmpty() ? context.getString(R.string.firmware_update_ok_rebooting) : response, null);
             } catch (Exception e) {
                 emit("failed", 0, message(e), null);
             } finally {
@@ -128,12 +137,12 @@ final class FirmwareManager {
     private FirmwareList fetchFirmwareList() throws Exception {
         DriveCredentials credentials = availableCredentials();
         if (credentials == null) {
-            throw new IllegalStateException("Reconnect to the recorder to obtain Drive authorization");
+            throw new IllegalStateException(context.getString(R.string.drive_reconnect_authorization));
         }
         Network network = requireInternet();
         String token = accessToken(network, credentials);
         String registration = settings.gliderRegistration();
-        if (registration.isEmpty()) throw new IllegalStateException("Recorder registration is unavailable");
+        if (registration.isEmpty()) throw new IllegalStateException(context.getString(R.string.recorder_registration_unavailable));
 
         List<String> checkedPaths = new ArrayList<>();
         for (String folderName : registrationFolderNames(registration)) {
@@ -146,7 +155,7 @@ final class FirmwareManager {
                 List<FirmwareFile> files = listFirmwareFiles(network, token, folder,
                         sourcePath, "recorder");
                 if (!files.isEmpty()) {
-                    return new FirmwareList(files, "Firmware files from " + sourcePath);
+                    return new FirmwareList(files, context.getString(R.string.firmware_files_from, sourcePath));
                 }
             }
         }
@@ -157,12 +166,11 @@ final class FirmwareManager {
             List<FirmwareFile> files = listFirmwareFiles(network, token, commonFolder,
                     "SLM-STC-DATA/FIRMWARE", "common");
             if (!files.isEmpty()) {
-                return new FirmwareList(files, "Firmware files from SLM-STC-DATA/FIRMWARE");
+                return new FirmwareList(files, context.getString(R.string.firmware_files_common));
             }
         }
         return new FirmwareList(new ArrayList<>(),
-                "No recorder firmware .bin file found in " + joinPaths(checkedPaths)
-                        + ". If the file is visible in Google Drive, refresh the recorder Drive authorization with firmware read access.");
+                context.getString(R.string.firmware_not_found, joinPaths(checkedPaths)));
     }
 
     private DriveCredentials availableCredentials() throws Exception {
@@ -224,11 +232,11 @@ final class FirmwareManager {
         values.add(cleaned);
     }
 
-    private static String joinPaths(List<String> paths) {
-        if (paths == null || paths.isEmpty()) return "server folders";
+    private String joinPaths(List<String> paths) {
+        if (paths == null || paths.isEmpty()) return context.getString(R.string.server_folders);
         StringBuilder result = new StringBuilder();
         for (int i = 0; i < paths.size(); i++) {
-            if (i > 0) result.append(" or ");
+            if (i > 0) result.append(context.getString(R.string.or_separator));
             result.append(paths.get(i));
         }
         return result.toString();
@@ -297,7 +305,7 @@ final class FirmwareManager {
             int status = connection.getResponseCode();
             if (status / 100 != 2) throw httpError(connection, "Drive firmware download");
             long total = connection.getContentLengthLong();
-            if (total > MAX_FIRMWARE_BYTES) throw new IllegalStateException("Firmware file is too large");
+            if (total > MAX_FIRMWARE_BYTES) throw new IllegalStateException(context.getString(R.string.firmware_file_too_large));
             long copied = 0;
             try (InputStream in = new BufferedInputStream(connection.getInputStream());
                  OutputStream out = new BufferedOutputStream(new FileOutputStream(target))) {
@@ -307,22 +315,22 @@ final class FirmwareManager {
                 while ((count = in.read(buffer)) >= 0) {
                     if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
                     copied += count;
-                    if (copied > MAX_FIRMWARE_BYTES) throw new IllegalStateException("Firmware file is too large");
+                    if (copied > MAX_FIRMWARE_BYTES) throw new IllegalStateException(context.getString(R.string.firmware_file_too_large));
                     out.write(buffer, 0, count);
                     digest.update(buffer, 0, count);
                     int percent = total > 0 ? (int) Math.min(99, copied * 100 / total) : 0;
                     if (percent != lastPercent) {
-                        emit("downloading", percent, "Downloading firmware from server", null);
+                        emit("downloading", percent, context.getString(R.string.firmware_downloading_server), null);
                         lastPercent = percent;
                     }
                 }
             }
-            if (target.length() <= 0) throw new IllegalStateException("Firmware download is empty");
+            if (target.length() <= 0) throw new IllegalStateException(context.getString(R.string.firmware_download_empty));
             if (selected.size > 0 && target.length() != selected.size) {
-                throw new IllegalStateException("Incomplete firmware download");
+                throw new IllegalStateException(context.getString(R.string.firmware_download_incomplete));
             }
             selected.sha256 = hex(digest.digest());
-            emit("downloaded", 100, "Firmware downloaded from server", null);
+            emit("downloaded", 100, context.getString(R.string.firmware_downloaded_server), null);
             return target;
         } finally {
             connection.disconnect();
@@ -364,7 +372,7 @@ final class FirmwareManager {
                     copied += count;
                     int percent = (int) Math.min(99, copied * 100 / Math.max(1L, firmware.length()));
                     if (percent != lastPercent) {
-                        emit("uploading", percent, "Uploading firmware to recorder", null);
+                        emit("uploading", percent, context.getString(R.string.firmware_uploading_recorder), null);
                         lastPercent = percent;
                     }
                 }
@@ -374,8 +382,9 @@ final class FirmwareManager {
             String response = readLimited(status / 100 == 2
                     ? connection.getInputStream() : connection.getErrorStream());
             if (status / 100 != 2) {
-                throw new IllegalStateException("Recorder firmware upload returned HTTP "
-                        + status + (response.isEmpty() ? "" : ": " + response));
+                String detail = response.isEmpty() ? "" : ": " + response;
+                throw new IllegalStateException(context.getString(
+                        R.string.firmware_upload_http_error, status, detail));
             }
             return response;
         } finally {
@@ -402,14 +411,14 @@ final class FirmwareManager {
         }
     }
 
-    private static JSONObject responseJson(HttpURLConnection connection, String operation) throws Exception {
+    private JSONObject responseJson(HttpURLConnection connection, String operation) throws Exception {
         int status = connection.getResponseCode();
         if (status / 100 != 2) throw httpError(connection, operation);
         String value = readLimited(connection.getInputStream());
         return value.isEmpty() ? new JSONObject() : new JSONObject(value);
     }
 
-    private static IllegalStateException httpError(HttpURLConnection connection, String operation) throws Exception {
+    private IllegalStateException httpError(HttpURLConnection connection, String operation) throws Exception {
         InputStream stream = connection.getErrorStream();
         String detail = stream == null ? "" : readLimited(stream);
         if (detail.length() > 300) detail = detail.substring(0, 300);
@@ -430,7 +439,7 @@ final class FirmwareManager {
 
     private Network requireInternet() {
         Network network = networks.uploadNetwork();
-        if (network == null) throw new IllegalStateException("Internet connection is unavailable");
+        if (network == null) throw new IllegalStateException(context.getString(R.string.internet_unavailable));
         return network;
     }
 
@@ -487,13 +496,13 @@ final class FirmwareManager {
         return value.replace("\\", "\\\\").replace("'", "\\'");
     }
 
-    private static String readLimited(InputStream in) throws Exception {
+    private String readLimited(InputStream in) throws Exception {
         if (in == null) return "";
         try (InputStream source = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[4096];
             int count;
             while ((count = source.read(buffer)) >= 0) {
-                if (out.size() + count > MAX_RESPONSE) throw new IllegalStateException("Server response is too large");
+                if (out.size() + count > MAX_RESPONSE) throw new IllegalStateException(context.getString(R.string.server_response_too_large));
                 out.write(buffer, 0, count);
             }
             return out.toString(StandardCharsets.UTF_8.name());
@@ -511,9 +520,11 @@ final class FirmwareManager {
         return result.toString();
     }
 
-    private static String message(Exception error) {
+    private String message(Exception error) {
         String value = error.getMessage();
-        return value == null || value.trim().isEmpty() ? error.getClass().getSimpleName() : value;
+        String message = value == null || value.trim().isEmpty()
+                ? error.getClass().getSimpleName() : value;
+        return BridgeErrorText.localize(context, message);
     }
 
     private static final class FirmwareList {

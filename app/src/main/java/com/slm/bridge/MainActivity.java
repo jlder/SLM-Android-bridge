@@ -48,7 +48,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -77,6 +76,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private NetworkCoordinator networks;
     private TransferManager transfers;
     private FirmwareManager firmwareManager;
+    private OtaActivityTracker otaActivity;
     private RecorderFileExporter fileExporter;
     private RecorderFileExporter.Request pendingDownload;
     private ValueCallback<Uri[]> pendingFileChooser;
@@ -98,8 +98,6 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private volatile Network recorderProbeNetwork;
     private volatile boolean recorderReady;
     private volatile boolean recorderUpdateOnlyMode;
-    private String recorderLegacyPasswordFallback = "";
-    private boolean recorderLegacyPasswordAttempted;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicInteger recorderScanGeneration = new AtomicInteger();
     private final AtomicInteger recorderProbeGeneration = new AtomicInteger();
@@ -112,7 +110,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private boolean recorderStatusBlinking;
     private boolean showDisconnectedRecorder;
     private boolean recorderStatusTextVisible = true;
-    private String recorderStatusText = "No\nRecorder";
+    private String recorderStatusText = "";
     private int recorderStatusColor = COLOR_AMBER;
     private int serviceDiagnosticsTapCount;
     private long serviceDiagnosticsFirstTapMs;
@@ -142,14 +140,16 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         fileQueueStatus = findViewById(R.id.fileQueueStatus);
         fileTransferProgress = findViewById(R.id.fileTransferProgress);
         connectButton = findViewById(R.id.connectButton);
+        recorderStatusText = getString(R.string.status_no_recorder);
         networks = new NetworkCoordinator(this, this);
+        otaActivity = new OtaActivityTracker();
         fileExporter = new RecorderFileExporter(this, networks, settings, this::onExportFinished);
         TransferStore store = new TransferStore(this);
         DriveCredentialStore driveCredentialStore = new DriveCredentialStore(this);
         transfers = new TransferManager(networks, settings, store,
                 driveCredentialStore, webView,
                 status -> runOnUiThread(() -> updateServerQueueUi(status)));
-        firmwareManager = new FirmwareManager(networks, settings, driveCredentialStore, webView);
+        firmwareManager = new FirmwareManager(networks, settings, driveCredentialStore, webView, otaActivity);
         configureWebView(store, transfers, firmwareManager);
         connectButton.setOnClickListener(v -> {
             resetServiceDiagnosticsTapSequence();
@@ -300,7 +300,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 store, settings, debugBuild, () -> recorderUpdateOnlyMode));
         webView.setWebChromeClient(createRecorderWebChromeClient());
         webView.setDownloadListener(this::onDownloadRequested);
-        webView.addJavascriptInterface(new RecorderJavascriptBridge(transfers, networks, firmwareManager), "SLMAndroid");
+        webView.addJavascriptInterface(new RecorderJavascriptBridge(
+                transfers, networks, firmwareManager, otaActivity), "SLMAndroid");
     }
 
     private WebChromeClient createRecorderWebChromeClient() {
@@ -338,7 +339,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 } catch (ActivityNotFoundException e) {
                     pendingFileChooser = null;
                     filePathCallback.onReceiveValue(null);
-                    showMessageDialog("File selection unavailable", "No file picker is available on this phone.");
+                    showMessageDialog(getString(R.string.file_selection_unavailable_title),
+                            getString(R.string.file_selection_unavailable_message));
                 }
                 return true;
             }
@@ -356,11 +358,13 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private void onDownloadRequested(String url, String userAgent, String contentDisposition,
                                      String mimeType, long contentLength) {
         if (pendingDownload != null) {
-            Toast.makeText(this, "Finish the current file selection first", Toast.LENGTH_SHORT).show();
+            showMessageDialog(getString(R.string.file_selection_in_progress_title),
+                    getString(R.string.file_selection_in_progress_message));
             return;
         }
         if (networks.recorderNetwork() == null) {
-            showMessageDialog("Recorder not connected", "Connect to the recorder before downloading a file.");
+            showMessageDialog(getString(R.string.recorder_not_connected_title),
+                    getString(R.string.recorder_not_connected_download_message));
             return;
         }
         String safeMimeType = mimeType == null || mimeType.trim().isEmpty()
@@ -380,7 +384,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                         + ", page=" + webView.getUrl()
                         + ", expectedOrigin=" + RecorderUrlPolicy.origin(settings.recorderBaseUrl()));
             }
-            showMessageDialog("Download blocked", "The requested download did not come from the connected recorder.");
+            showMessageDialog(getString(R.string.download_blocked_title),
+                    getString(R.string.download_blocked_message));
             return;
         } else {
             String recorderFilename = RecorderUrlPolicy.filenameFromDownloadUrl(resolvedUrl);
@@ -402,7 +407,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             startActivityForResult(destination, CREATE_DOCUMENT_REQUEST);
         } catch (ActivityNotFoundException e) {
             pendingDownload = null;
-            showMessageDialog("File save unavailable", "No document application is available to save this file.");
+            showMessageDialog(getString(R.string.file_save_unavailable_title),
+                    getString(R.string.file_save_unavailable_message));
         }
     }
 
@@ -421,7 +427,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         RecorderFileExporter.Request request = pendingDownload;
         pendingDownload = null;
         if (resultCode != RESULT_OK || data == null || data.getData() == null || request == null) return;
-        Toast.makeText(this, "Saving " + request.filename + "...", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, getString(R.string.saving_file, request.filename), Toast.LENGTH_SHORT).show();
         fileExporter.export(request, data.getData());
     }
 
@@ -431,11 +437,12 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         TransferManager manager = transfers;
         if (calibrationReport && manager != null) manager.enqueueReport(request);
         if (error == null) {
-            String message = request.filename + (calibrationReport
-                    ? " saved and queued for SLM server" : " saved");
+            String message = calibrationReport
+                    ? getString(R.string.file_saved_queued, request.filename)
+                    : getString(R.string.file_saved, request.filename);
             Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
         } else {
-            showMessageDialog("Download failed", error);
+            showMessageDialog(getString(R.string.download_failed_title), error);
         }
     }
 
@@ -444,7 +451,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setMessage(message)
-                .setPositiveButton("OK", null)
+                .setPositiveButton(getString(R.string.button_ok), null)
                 .show();
     }
 
@@ -516,7 +523,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             if (wifi == null) {
                 recorderScanPending = false;
                 updateConnectionUi(null, networks.uploadNetwork());
-                showMessageDialog("Wi-Fi unavailable", "Wi-Fi management is not available on this phone.");
+                showMessageDialog(getString(R.string.wifi_unavailable_title),
+                        getString(R.string.wifi_unavailable_message));
                 return;
             }
             registerRecorderScanReceiver(generation);
@@ -536,8 +544,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             recorderScanPending = false;
             unregisterRecorderScanReceiver();
             updateConnectionUi(null, networks.uploadNetwork());
-            showMessageDialog("Wi-Fi permission required",
-                    "Allow Wi-Fi scanning permission so SLM Bridge can find recorders.");
+            showMessageDialog(getString(R.string.wifi_permission_required_title),
+                    getString(R.string.wifi_scan_permission_message));
         }
     }
 
@@ -581,8 +589,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             if (!freshResultsAvailable) {
                 showScanTemporarilyUnavailableDialog();
             } else {
-                showMessageDialog("Recorder not found",
-                        "No SLM recorder Wi-Fi was found. Check that recorder Wi-Fi is on, then try Connect again.");
+                showMessageDialog(getString(R.string.recorder_not_found_title),
+                        getString(R.string.recorder_not_found_scan_message));
             }
             return;
         }
@@ -630,13 +638,13 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             registrations.append("• ").append(registration);
         }
 
-        String message = "Incompatible SLM Wi-Fi generations were found.";
+        String message = getString(R.string.wifi_version_conflict_message);
         if (registrations.length() > 0) {
-            message += "\n\nRecorders:\n" + registrations;
+            message += "\n\n" + getString(R.string.recorders_label) + "\n" + registrations;
         }
-        message += "\n\nUpdate SLM Bridge before connecting.";
+        message += "\n\n" + getString(R.string.update_bridge_before_connecting);
 
-        showMessageDialog("Wi-Fi version conflict", message);
+        showMessageDialog(getString(R.string.wifi_version_conflict_title), message);
     }
 
     private void showWifiGenerationConflictFor(int generation) {
@@ -645,20 +653,20 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
     private void showWifiGenerationConflictFor(int generation, String ssid) {
         String registration = recorderDisplayRegistration(ssid);
-        String recorderName = registration.isEmpty() ? "This recorder" : "Recorder " + registration;
+        String recorderName = registration.isEmpty()
+                ? getString(R.string.this_recorder)
+                : getString(R.string.recorder_named, registration);
         final String title;
         final String message;
         if (generation > GliderRegistration.SUPPORTED_WIFI_GENERATION) {
-            title = "SLM Bridge update required";
-            message = recorderName
-                    + " uses a newer Wi-Fi connection generation.\n\nUpdate SLM Bridge before connecting.";
+            title = getString(R.string.bridge_update_required_title);
+            message = getString(R.string.newer_wifi_generation_message, recorderName);
         } else if (generation > 0) {
-            title = "Recorder update required";
-            message = recorderName
-                    + " uses an older Wi-Fi connection generation.\n\nUpdate the recorder firmware before connecting.";
+            title = getString(R.string.recorder_update_required_title);
+            message = getString(R.string.older_wifi_generation_message, recorderName);
         } else {
-            title = "Invalid recorder Wi-Fi";
-            message = "The detected SLM recorder Wi-Fi name is invalid.";
+            title = getString(R.string.invalid_recorder_wifi_title);
+            message = getString(R.string.invalid_slm_wifi_message);
         }
         showMessageDialog(title, message);
     }
@@ -681,28 +689,21 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         }
         String password = settings.wifiPasswordForRecorder(ssid);
         if (password.isEmpty()) {
-            showMessageDialog("Invalid recorder Wi-Fi",
-                    "The detected recorder Wi-Fi name is invalid: " + ssid);
+            showMessageDialog(getString(R.string.invalid_recorder_wifi_title),
+                    getString(R.string.invalid_recorder_wifi_named_message, ssid));
             return;
         }
         cancelRecorderScan();
         settings.selectRecorder(ssid);
         resetRecorderProbe();
         recorderUpdateOnlyMode = generation < GliderRegistration.SUPPORTED_WIFI_GENERATION;
-        recorderLegacyPasswordAttempted = false;
-        recorderLegacyPasswordFallback = "";
-        if (recorderUpdateOnlyMode) {
-            String legacy = settings.legacyWifiPasswordForRecorder(ssid);
-            if (legacy != null && legacy.length() >= 8 && legacy.length() <= 63
-                    && !legacy.equals(password)) {
-                recorderLegacyPasswordFallback = legacy;
-            }
-        }
         showDisconnectedRecorder = false;
         recorderConnectionRequested = true;
         updateConnectionUi(null, networks.uploadNetwork());
+        IntegrityDiagnostics.bridgeEvent("NET", "CONNECT_REQUEST",
+                "ssid=" + ssid + " vpn_active=" + networks.isVpnActive());
         networks.connect(ssid, password);
-        Toast.makeText(this, "Connecting to " + ssid, Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, getString(R.string.connecting_to_ssid, ssid), Toast.LENGTH_SHORT).show();
     }
 
     private List<DiscoveredRecorder> scanSlmRecorders(boolean acceptCachedResults) {
@@ -728,8 +729,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 }
             }
         } catch (SecurityException security) {
-            showMessageDialog("Wi-Fi permission required",
-                    "Allow Wi-Fi scanning permission so SLM Bridge can find recorders.");
+            showMessageDialog(getString(R.string.wifi_permission_required_title),
+                    getString(R.string.wifi_scan_permission_message));
         } catch (RuntimeException ignored) {
             // Use an empty result and let the normal user message explain that no recorder was found.
         }
@@ -773,9 +774,9 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             items[index] = recorderDisplayRegistration(recorders.get(index).ssid);
         }
         new AlertDialog.Builder(this)
-                .setTitle("Select SLM recorder")
+                .setTitle(getString(R.string.select_slm_recorder_title))
                 .setItems(items, (dialog, which) -> connectToRecorder(recorders.get(which).ssid))
-                .setNegativeButton("Cancel", (dialog, which) ->
+                .setNegativeButton(getString(R.string.button_cancel), (dialog, which) ->
                         updateConnectionUi(networks.recorderNetwork(), networks.uploadNetwork()))
                 .setOnCancelListener(dialog ->
                         updateConnectionUi(networks.recorderNetwork(), networks.uploadNetwork()))
@@ -787,6 +788,14 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         boolean beginProbe = false;
         synchronized (this) {
             if (recorder == null) {
+                if (recorderProbeNetwork != null || recorderReady) {
+                    boolean otaActive = otaActivity != null && otaActivity.isActive();
+                    boolean otaGrace = otaActivity != null && otaActivity.isInGrace();
+                    IntegrityDiagnostics.bridgeEvent("NET", "RECORDER_NETWORK_LOST",
+                            "ota_active=" + otaActive
+                                    + " ota_grace=" + otaGrace
+                                    + " expected_reboot=" + otaGrace);
+                }
                 if (recorderReady) showDisconnectedRecorder = true;
                 if (recorderProbeNetwork != null || recorderReady) {
                     recorderProbeGeneration.incrementAndGet();
@@ -798,6 +807,9 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 recorderProbeNetwork = recorder;
                 recorderReady = false;
                 stopRecorderHealthMonitor();
+                IntegrityDiagnostics.bridgeEvent("NET", "RECORDER_NETWORK_AVAILABLE",
+                        "ssid=" + settings.recorderSsid()
+                                + " vpn_active=" + networks.isVpnActive());
                 beginProbe = true;
             }
         }
@@ -807,33 +819,26 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
     @Override public void onRecorderConnectionUnavailable() {
         runOnUiThread(() -> {
-            if (recorderUpdateOnlyMode
-                    && !recorderLegacyPasswordAttempted
-                    && recorderLegacyPasswordFallback != null
-                    && !recorderLegacyPasswordFallback.isEmpty()) {
-                recorderLegacyPasswordAttempted = true;
-                recorderConnectionRequested = true;
-                showDisconnectedRecorder = false;
-                updateConnectionUi(null, networks.uploadNetwork());
-                Toast.makeText(this, "Retrying old recorder Wi-Fi password", Toast.LENGTH_SHORT).show();
-                networks.connect(settings.recorderSsid(), recorderLegacyPasswordFallback);
-                return;
-            }
-
             boolean wasRecorderReady = recorderReady;
             markRecorderUnavailable(settings.recorderSsid());
             recorderConnectionRequested = false;
             showDisconnectedRecorder = wasRecorderReady;
             cancelRecorderScan();
             resetRecorderProbe();
+            IntegrityDiagnostics.bridgeEvent("NET", "RECORDER_NETWORK_UNAVAILABLE",
+                    "ssid=" + settings.recorderSsid()
+                            + " vpn_active=" + networks.isVpnActive());
             updateConnectionUi(networks.recorderNetwork(), networks.uploadNetwork());
-            showMessageDialog("Recorder not found",
-                    "The selected SLM recorder was not found. Check that its Wi-Fi is on, then try Connect again.");
+            showMessageDialog(getString(R.string.recorder_not_found_title),
+                    getString(R.string.recorder_not_found_selected_message));
         });
     }
 
     private void startRecorderProbe(Network network) {
         final int generation = recorderProbeGeneration.incrementAndGet();
+        IntegrityDiagnostics.bridgeEvent("HTTP", "WAITING_FOR_RECORDER",
+                "ssid=" + settings.recorderSsid()
+                        + " vpn_active=" + networks.isVpnActive());
         recorderProbeExecutor.execute(() -> {
             boolean answered = false;
             for (int attempt = 0; attempt < 40 && generation == recorderProbeGeneration.get(); attempt++) {
@@ -855,21 +860,28 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                     recorderReady = true;
                     recorderConnectionRequested = false;
                     showDisconnectedRecorder = false;
+                    IntegrityDiagnostics.bridgeEvent("HTTP", "RECORDER_READY",
+                            "ssid=" + settings.recorderSsid()
+                                    + " vpn_active=" + networks.isVpnActive());
                     startRecorderHealthMonitor(network);
                     updateConnectionUi(network, networks.uploadNetwork());
                     launchInterface();
                     if (recorderUpdateOnlyMode) {
-                        showMessageDialog("Recorder update required",
-                                "This recorder uses an older Wi-Fi generation. "
-                                        + "The Bridge will allow only the Maintenance/Firmware Update path until the recorder is updated.");
+                        showMessageDialog(getString(R.string.recorder_update_required_title),
+                                getString(R.string.old_recorder_update_only_message));
                     }
                 } else {
                     recorderReady = false;
                     recorderConnectionRequested = false;
                     showDisconnectedRecorder = false;
                     markRecorderUnavailable(settings.recorderSsid());
-                    showMessageDialog("Recorder not responding",
-                            "Recorder Wi-Fi connected, but the recorder did not answer. Check the recorder and try Connect again.");
+                    boolean vpnActive = networks.isVpnActive();
+                    IntegrityDiagnostics.bridgeEvent("HTTP", "RECORDER_UNREACHABLE",
+                            "ssid=" + settings.recorderSsid() + " vpn_active=" + vpnActive);
+                    showMessageDialog(getString(R.string.recorder_not_responding_title),
+                            getString(vpnActive
+                                    ? R.string.recorder_not_responding_vpn_message
+                                    : R.string.recorder_not_responding_message));
                     networks.disconnectRecorder();
                 }
             });
@@ -910,6 +922,10 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             if (generation != recorderHealthGeneration.get()
                     || !recorderReady
                     || !network.equals(networks.recorderNetwork())) return;
+            if (otaActivity != null && otaActivity.isProtected()) {
+                scheduleRecorderHealthCheck(generation, network);
+                return;
+            }
             recorderProbeExecutor.execute(() -> {
                 boolean answered = probeRecorder(network);
                 runOnUiThread(() -> onRecorderHealthChecked(generation, network, answered));
@@ -926,6 +942,13 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             scheduleRecorderHealthCheck(generation, network);
             return;
         }
+        if (otaActivity != null && otaActivity.isProtected()) {
+            recorderHealthFailures = 0;
+            IntegrityDiagnostics.bridgeEvent("HTTP", "HEALTH_FAILURE_IGNORED",
+                    "ota_active=true action=keep_recorder_network");
+            scheduleRecorderHealthCheck(generation, network);
+            return;
+        }
         recorderHealthFailures++;
         if (recorderHealthFailures < RECORDER_HEALTH_MAX_FAILURES) {
             scheduleRecorderHealthCheck(generation, network);
@@ -936,8 +959,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         showDisconnectedRecorder = true;
         markRecorderUnavailable(settings.recorderSsid());
         stopRecorderHealthMonitor();
-        showMessageDialog("Recorder disconnected",
-                "Recorder connection lost. Check that recorder Wi-Fi is on, then press Connect.");
+        showMessageDialog(getString(R.string.recorder_disconnected_title),
+                getString(R.string.recorder_disconnected_message));
         networks.disconnectRecorder();
         updateConnectionUi(null, networks.uploadNetwork());
     }
@@ -951,8 +974,6 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
     private void resetRecorderCompatibilityMode() {
         recorderUpdateOnlyMode = false;
-        recorderLegacyPasswordFallback = "";
-        recorderLegacyPasswordAttempted = false;
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
@@ -963,8 +984,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         } else {
             showDisconnectedRecorder = false;
             setRecorderStatus(null, false, false);
-            showMessageDialog("Wi-Fi permission required",
-                    "Allow Wi-Fi permission so SLM Bridge can connect to the recorder.");
+            showMessageDialog(getString(R.string.wifi_permission_required_title),
+                    getString(R.string.wifi_connect_permission_message));
         }
     }
 
@@ -975,11 +996,11 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         boolean recorderConnected = recorder != null;
         if (recorderScanPending) {
             setRecorderStatus("Searching", true, false);
-        } else if (recorderConnectionRequested) {
-            setRecorderStatus(settings.recorderSsid(), true, false);
         } else if (recorderConnected && recorderReady) {
             setRecorderStatus(settings.recorderSsid(), false, true);
         } else if (recorderConnected) {
+            setRecorderWaitingStatus(settings.recorderSsid());
+        } else if (recorderConnectionRequested) {
             setRecorderStatus(settings.recorderSsid(), true, false);
         } else if (showDisconnectedRecorder) {
             setRecorderStatus(settings.recorderSsid(), false, false);
@@ -989,7 +1010,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
         setButtonAvailable(connectButton, true);
         connectButton.setText(recorderConnected || recorderConnectionRequested || recorderScanPending
-                ? "STOP" : "CONNECT");
+                ? R.string.button_stop : R.string.button_connect);
         if (!recorderConnected && webView.getUrl() != null && !"about:blank".equals(webView.getUrl())) {
             webView.stopLoading();
             webView.loadUrl("about:blank");
@@ -1004,12 +1025,12 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
     private void updateServerUploadUi() {
         boolean serverConnected = latestUploadNetwork != null;
-        serverStatus.setText(serverConnected ? "Server\nConnected" : "Server\nOff-line");
+        serverStatus.setText(serverConnected ? R.string.server_connected : R.string.server_offline);
         serverStatus.setTextColor(serverConnected ? COLOR_GREEN : COLOR_AMBER);
 
         TransferManager.QueueStatus status = latestQueueStatus;
         if (status == null || status.isEmpty()) {
-            fileQueueStatus.setText("File upload None        File Queue Empty");
+            fileQueueStatus.setText(R.string.file_queue_empty);
             fileQueueStatus.setTextColor(Color.BLACK);
             fileTransferProgress.setVisibility(View.GONE);
             fileTransferProgress.setProgress(0);
@@ -1020,16 +1041,25 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         int current = Math.max(0, Math.min(status.currentFile, total));
         int percent = Math.max(0, Math.min(100, status.percent));
         if (status.state == TransferManager.QueueStatus.UPLOADING) {
-            fileQueueStatus.setText("File upload " + percent + "%        File Queue "
-                    + current + "/" + total);
+            fileQueueStatus.setText(getString(R.string.file_queue_uploading, percent, current, total));
             fileTransferProgress.setVisibility(View.VISIBLE);
             fileTransferProgress.setProgress(percent);
         } else {
-            fileQueueStatus.setText("File upload None        File Queue " + total + "/" + total);
+            fileQueueStatus.setText(getString(R.string.file_queue_complete, total));
             fileTransferProgress.setVisibility(View.GONE);
             fileTransferProgress.setProgress(0);
         }
         fileQueueStatus.setTextColor(Color.BLACK);
+    }
+
+    private void setRecorderWaitingStatus(String recorderSsid) {
+        String registration = GliderRegistration.fromSsid(recorderSsid == null ? "" : recorderSsid);
+        String display = GliderRegistration.displayRegistration(registration);
+        recorderStatusText = display.isEmpty()
+                ? getString(R.string.status_waiting_for_recorder)
+                : display + "\n" + getString(R.string.status_waiting_for_recorder);
+        recorderStatusColor = COLOR_AMBER;
+        setRecorderStatusBlinking(true);
     }
 
     private void setRecorderStatus(String recorderSsid, boolean connecting, boolean connected) {
@@ -1037,20 +1067,21 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         int color;
         boolean blink;
         if ("Searching".equals(recorderSsid)) {
-            text = "Searching\nRecorder";
+            text = getString(R.string.status_searching_recorder);
             color = COLOR_AMBER;
             blink = true;
         } else {
             String registration = GliderRegistration.fromSsid(recorderSsid == null ? "" : recorderSsid);
             String display = GliderRegistration.displayRegistration(registration);
             if (registration.isEmpty()) {
-                text = connecting ? "Connecting\nRecorder" : "No\nRecorder";
+                text = connecting ? getString(R.string.status_connecting_recorder)
+                        : getString(R.string.status_no_recorder);
             } else if (connected) {
-                text = display + "\nConnected";
+                text = display + "\n" + getString(R.string.status_connected);
             } else if (connecting) {
-                text = "Connecting\n" + display;
+                text = getString(R.string.status_connecting) + "\n" + display;
             } else {
-                text = display + "\nDisconnected";
+                text = display + "\n" + getString(R.string.status_disconnected);
             }
             color = connected ? COLOR_GREEN : COLOR_AMBER;
             blink = connecting;
@@ -1091,7 +1122,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
 
     private void launchInterface() {
         if (networks.recorderNetwork() == null || !recorderReady) {
-            Toast.makeText(this, "Wait until the recorder is ready", Toast.LENGTH_SHORT).show();
+            showMessageDialog(getString(R.string.recorder_not_ready_title),
+                    getString(R.string.recorder_not_ready_message));
             return;
         }
         webView.loadUrl(settings.recorderBaseUrl());
@@ -1106,17 +1138,17 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         if (isFinishing() || isDestroyed()) return;
         resumeRecorderConnectAfterLocationSettings = false;
         new AlertDialog.Builder(this)
-                .setTitle("Location must be enabled")
-                .setMessage("Android requires system Location to be enabled so SLM Bridge can discover nearby recorder Wi-Fi networks.\n\nSLM Bridge does not use or record your geographical position.")
-                .setNegativeButton("CANCEL", null)
-                .setPositiveButton("LOCATION SETTINGS", (dialog, which) -> {
+                .setTitle(getString(R.string.location_required_title))
+                .setMessage(getString(R.string.location_required_message))
+                .setNegativeButton(getString(R.string.button_cancel), null)
+                .setPositiveButton(getString(R.string.button_location_settings), (dialog, which) -> {
                     resumeRecorderConnectAfterLocationSettings = true;
                     try {
                         startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
                     } catch (ActivityNotFoundException error) {
                         resumeRecorderConnectAfterLocationSettings = false;
-                        showMessageDialog("Location settings unavailable",
-                                "Open Android Settings and enable Location, then press Connect again.");
+                        showMessageDialog(getString(R.string.location_settings_unavailable_title),
+                                getString(R.string.location_settings_unavailable_message));
                     }
                 })
                 .show();
@@ -1125,10 +1157,10 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private void showScanTemporarilyUnavailableDialog() {
         if (isFinishing() || isDestroyed()) return;
         new AlertDialog.Builder(this)
-                .setTitle("Wi-Fi scan temporarily unavailable")
-                .setMessage("Android could not start a new Wi-Fi scan. Please try again.")
-                .setNegativeButton("CANCEL", null)
-                .setPositiveButton("RETRY", (dialog, which) -> requestPermissionAndConnect())
+                .setTitle(getString(R.string.wifi_scan_unavailable_title))
+                .setMessage(getString(R.string.wifi_scan_unavailable_message))
+                .setNegativeButton(getString(R.string.button_cancel), null)
+                .setPositiveButton(getString(R.string.button_retry), (dialog, which) -> requestPermissionAndConnect())
                 .show();
     }
 

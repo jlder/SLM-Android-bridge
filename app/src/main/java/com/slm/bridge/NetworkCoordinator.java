@@ -31,6 +31,24 @@ final class NetworkCoordinator {
 
     Network recorderNetwork() { return recorderNetwork; }
     Network cellularNetwork() { return cellularNetwork; }
+
+    boolean isVpnActive() {
+        try {
+            Network[] allNetworks = connectivity.getAllNetworks();
+            if (allNetworks == null) return false;
+            for (Network network : allNetworks) {
+                NetworkCapabilities capabilities = connectivity.getNetworkCapabilities(network);
+                if (capabilities != null
+                        && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                    return true;
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // VPN state is diagnostic only. Keep normal recorder handling if Android
+            // does not allow the current network list to be inspected.
+        }
+        return false;
+    }
     Network uploadNetwork() {
         // Recorder Wi-Fi has no Internet.  Drive/server traffic must therefore
         // use a validated Internet network selected explicitly with

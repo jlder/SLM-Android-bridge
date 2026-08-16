@@ -8,12 +8,14 @@ public final class RecorderJavascriptBridge {
     private final TransferManager transfers;
     private final NetworkCoordinator networks;
     private final FirmwareManager firmware;
+    private final OtaActivityTracker otaActivity;
 
     RecorderJavascriptBridge(TransferManager transfers, NetworkCoordinator networks,
-                             FirmwareManager firmware) {
+                             FirmwareManager firmware, OtaActivityTracker otaActivity) {
         this.transfers = transfers;
         this.networks = networks;
         this.firmware = firmware;
+        this.otaActivity = otaActivity;
     }
 
     @JavascriptInterface public String getCapabilities() {
@@ -72,5 +74,15 @@ public final class RecorderJavascriptBridge {
 
     @JavascriptInterface public void installServerFirmware(String requestJson) {
         firmware.installServerFirmware(requestJson);
+    }
+
+    /** Called by the Bridge-injected XHR monitor for phone-selected /api/ota uploads. */
+    @JavascriptInterface public void recorderOtaStarted() {
+        if (otaActivity != null) otaActivity.begin("PHONE");
+    }
+
+    /** Ends phone-selected OTA activity but retains a short reboot/ACK grace period. */
+    @JavascriptInterface public void recorderOtaFinished() {
+        if (otaActivity != null) otaActivity.finish("PHONE");
     }
 }

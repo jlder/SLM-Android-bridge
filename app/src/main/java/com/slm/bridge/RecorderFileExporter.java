@@ -65,9 +65,9 @@ final class RecorderFileExporter {
 
     private void download(Request request, Uri destination) throws Exception {
         Network network = networks.recorderNetwork();
-        if (network == null) throw new IllegalStateException("Recorder Wi-Fi is unavailable");
+        if (network == null) throw new IllegalStateException(context.getString(R.string.recorder_wifi_unavailable));
         if (!RecorderUrlPolicy.isAllowed(request.url, settings.recorderBaseUrl())) {
-            throw new SecurityException("Recorder download URL is outside the allowed origin");
+            throw new SecurityException(context.getString(R.string.recorder_download_url_not_allowed));
         }
 
         URL current = new URL(request.url);
@@ -85,20 +85,20 @@ final class RecorderFileExporter {
             String location = connection.getHeaderField("Location");
             connection.disconnect();
             connection = null;
-            if (location == null) throw new IllegalStateException("Recorder returned an invalid redirect");
+            if (location == null) throw new IllegalStateException(context.getString(R.string.recorder_invalid_redirect));
             current = new URL(current, location);
             if (!RecorderUrlPolicy.isAllowed(current.toString(), settings.recorderBaseUrl())) {
-                throw new SecurityException("Recorder download redirected outside the allowed origin");
+                throw new SecurityException(context.getString(R.string.recorder_redirect_outside_origin));
             }
         }
 
-        if (connection == null) throw new IllegalStateException("Too many recorder redirects");
+        if (connection == null) throw new IllegalStateException(context.getString(R.string.too_many_recorder_redirects));
         try {
             int status = connection.getResponseCode();
-            if (status / 100 != 2) throw new IllegalStateException("Recorder returned HTTP " + status);
+            if (status / 100 != 2) throw new IllegalStateException(context.getString(R.string.recorder_http_error, status));
             try (InputStream in = new BufferedInputStream(connection.getInputStream());
                  OutputStream raw = context.getContentResolver().openOutputStream(destination, "w")) {
-                if (raw == null) throw new IllegalStateException("The selected file cannot be opened");
+                if (raw == null) throw new IllegalStateException(context.getString(R.string.selected_file_cannot_open));
                 try (OutputStream out = new BufferedOutputStream(raw)) {
                     byte[] buffer = new byte[64 * 1024];
                     int count;

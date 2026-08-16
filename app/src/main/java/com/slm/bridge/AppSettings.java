@@ -21,11 +21,6 @@ final class AppSettings {
         return GliderRegistration.wifiPasswordFromSsid(ssid);
     }
 
-    /** Return a password saved by the earliest Bridge builds for old-recorder recovery. */
-    String legacyWifiPasswordForRecorder(String ssid) {
-        return legacyPasswordForSsid(ssid);
-    }
-
     void selectRecorder(String ssid) {
         String value = ssid == null ? "" : ssid.trim();
         if (!GliderRegistration.isRecorderSsid(value)) return;
@@ -36,23 +31,5 @@ final class AppSettings {
                 .remove("upload_url")
                 .remove("token")
                 .apply();
-    }
-
-    private String legacyPasswordForSsid(String ssid) {
-        String target = ssid == null ? "" : ssid.trim();
-        if (target.isEmpty()) return "";
-
-        String firstSsid = prefs.getString("ssid_1", prefs.getString("ssid", ""));
-        if (target.equalsIgnoreCase(firstSsid == null ? "" : firstSsid.trim())) {
-            String password = prefs.getString("wifi_password_1", prefs.getString("wifi_password", ""));
-            return password == null ? "" : password;
-        }
-
-        String secondSsid = prefs.getString("ssid_2", "");
-        if (target.equalsIgnoreCase(secondSsid == null ? "" : secondSsid.trim())) {
-            String password = prefs.getString("wifi_password_2", "");
-            return password == null ? "" : password;
-        }
-        return "";
     }
 }

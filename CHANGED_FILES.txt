@@ -1,5 +1,7 @@
-SLM Bridge v0.3.43 -> v0.3.44
-- app/build.gradle: versionCode 44 -> 45; versionName 0.3.43 -> 0.3.44
-- app/src/main/java/com/slm/bridge/TransferManager.java: immediately republish queue status when another analysed recorder file becomes upload-ready
-- README.md: documents live queue-total refresh
-- VALIDATION.md: current baseline title/scope updated to v0.3.44 and multi-file queue-total validation retained
+SLM Bridge v0.3.47 -> v0.3.48
+- app/build.gradle: versionCode 48 -> 49; versionName 0.3.47 -> 0.3.48
+- app/src/main/res/layout/activity_main.xml: allow the recorder-status field to use three lines
+- app/src/main/res/values/strings.xml: split the waiting state into `Waiting` / `for recorder`
+- app/src/main/res/values-fr/strings.xml: split the waiting state into `Attente` / `Enregistreur`
+- README.md: document the v0.3.48 three-line waiting-status presentation
+- VALIDATION.md: update the current baseline to v0.3.48 and add the waiting-status display check

@@ -63,13 +63,24 @@ final class IntegrityDiagnostics {
         event("RECORDER_ARCHIVE_COMPLETE", filename, size, sha256, integrityMode);
     }
 
+    static void bridgeEvent(String source, String event, String details) {
+        String safeSource = source == null || source.trim().isEmpty()
+                ? "BRIDGE" : source.trim().toUpperCase(Locale.US);
+        String safeEvent = event == null || event.trim().isEmpty()
+                ? "UNKNOWN" : event.trim().toUpperCase(Locale.US);
+        String message = "src=" + safe(safeSource) + " event=" + safe(safeEvent);
+        if (details != null && !details.trim().isEmpty()) message += " " + details.trim();
+        Log.i(LOG_TAG, message);
+        persist(message);
+    }
+
     static void failure(String filename, String stage, Exception error) {
         String safeFilename = filename == null ? "" : filename;
         String safeStage = stage == null ? "UNKNOWN" : stage.toUpperCase(Locale.US);
         String detail = error == null || error.getMessage() == null
                 ? (error == null ? "unknown" : error.getClass().getSimpleName())
                 : error.getMessage();
-        String message = "event=INTEGRITY_FAILURE stage=" + safeStage
+        String message = "src=INTEGRITY event=INTEGRITY_FAILURE stage=" + safeStage
                 + " file=" + safe(safeFilename) + " error=" + safe(detail);
         Log.e(LOG_TAG, message, error);
         persist(message);
@@ -107,7 +118,7 @@ final class IntegrityDiagnostics {
 
     private static void event(String event, String filename, long size, String sha256,
                               String integrityMode) {
-        String message = "event=" + event
+        String message = "src=INTEGRITY event=" + event
                 + " file=" + safe(filename)
                 + " size=" + size
                 + " sha256=" + safe(sha256).toLowerCase(Locale.US)

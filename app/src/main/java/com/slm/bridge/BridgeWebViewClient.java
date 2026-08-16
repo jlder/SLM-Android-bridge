@@ -14,6 +14,23 @@ import java.util.function.BooleanSupplier;
 
 final class BridgeWebViewClient extends WebViewClient {
     private static final String LOG_TAG = "SLM-Web";
+    private static final String OTA_MONITOR_SCRIPT =
+            "(function(){"
+            + "if(window.__slmBridgeOtaMonitorApplied)return;"
+            + "window.__slmBridgeOtaMonitorApplied=true;"
+            + "var p=XMLHttpRequest.prototype,o=p.open,s=p.send;"
+            + "p.open=function(m,u){"
+            + "this.__slmBridgeOta=(String(m).toUpperCase()==='POST'&&/\\/api\\/ota(?:[?#]|$)/.test(String(u)));"
+            + "return o.apply(this,arguments);};"
+            + "p.send=function(){"
+            + "if(this.__slmBridgeOta){"
+            + "try{if(window.SLMAndroid&&typeof window.SLMAndroid.recorderOtaStarted==='function')window.SLMAndroid.recorderOtaStarted();}catch(e){}"
+            + "var x=this,done=false,f=function(){if(done)return;done=true;try{if(window.SLMAndroid&&typeof window.SLMAndroid.recorderOtaFinished==='function')window.SLMAndroid.recorderOtaFinished();}catch(e){}};"
+            + "x.addEventListener('loadend',f);"
+            + "}"
+            + "try{return s.apply(this,arguments);}catch(e){if(this.__slmBridgeOta){try{f();}catch(ignore){}}throw e;}};"
+            + "})();";
+
     private static final String UPDATE_ONLY_SCRIPT =
             "(function(){"
             + "if(window.__slmBridgeUpdateOnlyApplied)return;"
@@ -54,8 +71,14 @@ final class BridgeWebViewClient extends WebViewClient {
 
     @Override public void onPageFinished(WebView view, String url) {
         super.onPageFinished(view, url);
-        if (updateOnlyMode == null || !updateOnlyMode.getAsBoolean()) return;
         if (!RecorderUrlPolicy.isAllowed(url, settings.recorderBaseUrl())) return;
+
+        // Detect phone-selected OTA POSTs even when the recorder firmware is an
+        // older version that knows nothing about the Bridge OTA-protection API.
+        // This lets the Android health monitor stand down while /api/ota is active.
+        view.evaluateJavascript(OTA_MONITOR_SCRIPT, null);
+
+        if (updateOnlyMode == null || !updateOnlyMode.getAsBoolean()) return;
         // Recorder pages are single-page applications: Maintenance/Firmware
         // navigation normally changes visible sections without changing URL.
         // Restrict those page-switch functions after load rather than relying
