@@ -1024,7 +1024,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     }
 
     private void updateServerUploadUi() {
-        boolean serverConnected = latestUploadNetwork != null;
+        boolean serverConnected = latestUploadNetwork != null
+                && networks.serverReachable(latestUploadNetwork);
         serverStatus.setText(serverConnected ? R.string.server_connected : R.string.server_offline);
         serverStatus.setTextColor(serverConnected ? COLOR_GREEN : COLOR_AMBER);
 
@@ -1040,7 +1041,9 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         int total = Math.max(1, status.totalFiles);
         int current = Math.max(0, Math.min(status.currentFile, total));
         int percent = Math.max(0, Math.min(100, status.percent));
-        if (status.state == TransferManager.QueueStatus.UPLOADING) {
+        boolean interruptedUpload = status.state == TransferManager.QueueStatus.WAITING
+                && current > 0;
+        if (status.state == TransferManager.QueueStatus.UPLOADING || interruptedUpload) {
             fileQueueStatus.setText(getString(R.string.file_queue_uploading, percent, current, total));
             fileTransferProgress.setVisibility(View.VISIBLE);
             fileTransferProgress.setProgress(percent);

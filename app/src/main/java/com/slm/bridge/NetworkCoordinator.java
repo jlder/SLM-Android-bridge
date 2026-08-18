@@ -22,6 +22,7 @@ final class NetworkCoordinator {
     private volatile Network recorderNetwork;
     private volatile Network cellularNetwork;
     private volatile Network defaultInternetNetwork;
+    private volatile Network failedUploadNetwork;
 
     NetworkCoordinator(Context context, Listener listener) {
         this.connectivity = context.getSystemService(ConnectivityManager.class);
@@ -66,6 +67,36 @@ final class NetworkCoordinator {
         Network discoveredCellular = findValidatedInternetNetwork(true);
         if (discoveredCellular != null) return discoveredCellular;
         return findValidatedInternetNetwork(false);
+    }
+
+    boolean serverReachable(Network internet) {
+        if (internet == null) return false;
+        Network failed = failedUploadNetwork;
+        return failed == null || !internet.equals(failed);
+    }
+
+    void reportUploadFailure(Network network, Exception error) {
+        if (network == null) return;
+        boolean changed = !network.equals(failedUploadNetwork);
+        failedUploadNetwork = network;
+        if (changed) {
+            String detail = error == null ? "unknown"
+                    : error.getClass().getSimpleName() + ":" + safeDetail(error.getMessage());
+            IntegrityDiagnostics.bridgeEvent("NET", "SERVER_PATH_FAILED",
+                    "network=" + network + " error=" + detail);
+        }
+        notifyListener();
+    }
+
+    void reportUploadSuccess(Network network) {
+        if (network == null) return;
+        Network failed = failedUploadNetwork;
+        if (failed != null && network.equals(failed)) {
+            failedUploadNetwork = null;
+            IntegrityDiagnostics.bridgeEvent("NET", "SERVER_PATH_RECOVERED",
+                    "network=" + network);
+            notifyListener();
+        }
     }
 
     void connect(String ssid, String password) {
@@ -185,28 +216,40 @@ final class NetworkCoordinator {
     }
 
     private void registerDefaultInternetCallback() {
+        // Observe every Internet-capable network, not only Android's current
+        // default network. This is more reliable when the phone leaves the
+        // recorder AP and reconnects to a normal Wi-Fi network: the app may be
+        // process-bound to the recorder during part of that transition.
+        NetworkRequest internetRequest = new NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build();
         defaultInternetCallback = new ConnectivityManager.NetworkCallback() {
             @Override public void onAvailable(Network network) {
-                updateDefaultInternet(network);
+                refreshDefaultInternet();
             }
 
-            @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
-                if (isValidatedInternet(capabilities)) defaultInternetNetwork = network;
-                else if (network.equals(defaultInternetNetwork)) defaultInternetNetwork = null;
-                notifyListener();
+            @Override public void onCapabilitiesChanged(Network network,
+                                                          NetworkCapabilities capabilities) {
+                refreshDefaultInternet();
             }
 
             @Override public void onLost(Network network) {
-                if (network.equals(defaultInternetNetwork)) defaultInternetNetwork = null;
-                notifyListener();
+                refreshDefaultInternet();
             }
         };
-        connectivity.registerDefaultNetworkCallback(defaultInternetCallback);
+        connectivity.registerNetworkCallback(internetRequest, defaultInternetCallback);
     }
 
-    private void updateDefaultInternet(Network network) {
-        NetworkCapabilities capabilities = connectivity.getNetworkCapabilities(network);
-        defaultInternetNetwork = isValidatedInternet(capabilities) ? network : null;
+    private void refreshDefaultInternet() {
+        Network previous = defaultInternetNetwork;
+        Network current = findValidatedInternetNetwork(false);
+        defaultInternetNetwork = current;
+        boolean changed = previous == null ? current != null : !previous.equals(current);
+        if (changed) {
+            IntegrityDiagnostics.bridgeEvent("NET",
+                    current == null ? "INTERNET_UNAVAILABLE" : "INTERNET_AVAILABLE",
+                    current == null ? "" : "network=" + current);
+        }
         notifyListener();
     }
 
@@ -241,6 +284,11 @@ final class NetworkCoordinator {
         return capabilities != null
                 && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+    }
+
+    private static String safeDetail(String value) {
+        if (value == null || value.trim().isEmpty()) return "none";
+        return value.trim().replace(' ', '_').replace('\n', '_').replace('\r', '_');
     }
 
     private void notifyListener() { listener.onNetworksChanged(recorderNetwork, uploadNetwork()); }

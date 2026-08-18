@@ -39,7 +39,7 @@ Android supplies network routing, durable storage, and cellular upload.
 - Periodic recorder health checks after connection. If the recorder Wi-Fi or Web
   service disappears, the bridge disconnects, clears the WebView, and returns to
   `No / Recorder`.
-- Server status is shown in the right header field as `Server / Off-line` or `Server / Connected`. The compact line below CONNECT/STOP shows upload and queue state together, for example `File upload: none        File queue: empty` or `File upload: 45%        File queue: 1/3`, with a progress bar during file transfer.
+- Server status is shown in the right header field as `Server / Off-line` or `Server / Connected`. A real Drive transport failure forces the status to `Off-line` immediately even if Android has not yet withdrawn its validated-network flag. The compact line below CONNECT/STOP shows upload and queue state together, for example `File upload: none        File queue: empty` or `File upload: 45%        File queue: 1/3`, with a progress bar during file transfer.
   On phones using French, the normal Bridge UI and user-facing messages are displayed in French (for example `Envoi fichier: aucun        File d’attente: vide`); English is used for all other phone languages. Integrity diagnostics remain in English.
   The server side uses an explicitly selected validated Internet network and is
   kept separate from the local recorder Wi-Fi network used by the WebView.
@@ -301,3 +301,16 @@ Version 0.3.48 changes only the presentation of the intermediate recorder-waitin
 - French: `F-CJAF` / `Attente` / `Enregistreur`
 
 Connection logic, VPN detection, diagnostics, and the v0.3.47 OTA health-monitor protection are unchanged.
+
+## v0.3.49 — Wi-Fi Internet recovery and server-status correction
+
+Version 0.3.49 improves recovery when the phone has Internet only through normal Wi-Fi. After leaving the recorder AP, pending uploads no longer depend solely on one Android network callback: while files remain queued, the Bridge re-evaluates available validated Internet networks every 5 seconds and retries automatically. This allows uploads to resume when the phone reconnects to its normal Wi-Fi even if Android delays or misses the expected callback.
+
+The Internet callback now observes all Internet-capable networks rather than only the current default network. Recorder traffic remains explicitly bound to the recorder network and Drive traffic continues to use `Network.openConnection()` on a validated non-recorder Internet network.
+
+`Server / Connected` is also made more conservative. If an actual Drive operation fails with a transport/network I/O error, the affected Internet path is marked failed and the header changes to `Server / Off-line` immediately. A later successful Drive operation on that path clears the failure and restores `Server / Connected`. Diagnostics record `src=NET event=INTERNET_AVAILABLE`, `INTERNET_UNAVAILABLE`, `SERVER_PATH_FAILED`, and `SERVER_PATH_RECOVERED`.
+
+
+## v0.3.50 — interrupted upload progress retention
+
+If a server upload is interrupted, the Bridge now keeps the last reached upload percentage and current queue position visible while the file remains pending for retry. The progress bar is frozen at that value instead of changing to `File upload: none` / `Envoi fichier: aucun`. When Internet becomes usable and the retry starts, the Drive upload restarts from 0% because uploads are retried as a new HTTP transfer rather than resumed from the previous byte position.

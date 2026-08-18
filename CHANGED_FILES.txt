@@ -1,7 +1,6 @@
-SLM Bridge v0.3.47 -> v0.3.48
-- app/build.gradle: versionCode 48 -> 49; versionName 0.3.47 -> 0.3.48
-- app/src/main/res/layout/activity_main.xml: allow the recorder-status field to use three lines
-- app/src/main/res/values/strings.xml: split the waiting state into `Waiting` / `for recorder`
-- app/src/main/res/values-fr/strings.xml: split the waiting state into `Attente` / `Enregistreur`
-- README.md: document the v0.3.48 three-line waiting-status presentation
-- VALIDATION.md: update the current baseline to v0.3.48 and add the waiting-status display check
+SLM Bridge v0.3.49 -> v0.3.50
+- app/build.gradle: versionCode 50 -> 51; versionName 0.3.49 -> 0.3.50
+- app/src/main/java/com/slm/bridge/TransferManager.java: retain the last reached upload percentage and queue position after an interrupted upload while the item remains pending for retry
+- app/src/main/java/com/slm/bridge/MainActivity.java: display the retained interrupted percentage/progress bar for a waiting upload instead of `File upload: none` / `Envoi fichier: aucun`
+- README.md: document interrupted-upload progress retention and retry-from-0 behavior
+- VALIDATION.md: add focused v0.3.50 interruption/recovery validation

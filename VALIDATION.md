@@ -1,8 +1,8 @@
-# SLM Bridge v0.3.48 validation
+# SLM Bridge v0.3.49 validation
 
 ## Scope
 
-This validation file covers the current SLM Bridge v0.3.48 baseline, including the v0.3.42 Android Location prerequisite, the v0.3.43 fresh-scan/retry behavior, the v0.3.44 live queue-total refresh, the v0.3.45 French/English localization and UI cleanup, and the v0.3.46 recorder-reachability/VPN diagnostics. The earlier integrity, durable-queue, upload-verification, and recorder-archive checks remain applicable.
+This validation file covers the current SLM Bridge v0.3.49 baseline, including the v0.3.42 Android Location prerequisite, the v0.3.43 fresh-scan/retry behavior, the v0.3.44 live queue-total refresh, the v0.3.45 French/English localization and UI cleanup, and the v0.3.46 recorder-reachability/VPN diagnostics. The earlier integrity, durable-queue, upload-verification, and recorder-archive checks remain applicable.
 
 ## Normal immutable file
 
@@ -119,3 +119,23 @@ Confirm a verified upload is archived through `POST /api/archive` and that queue
 3. Confirm the shorter three-line presentation retains the normal larger recorder-status font and does not shrink to the small font previously caused by `Waiting for recorder` / `Attente enregistreur` on one line.
 4. Confirm the v0.3.46 VPN-specific acknowledged error dialog and persistent NET/HTTP diagnostics are unchanged.
 5. Confirm the v0.3.47 OTA health-monitor protection remains active and unchanged.
+
+## v0.3.49 — Wi-Fi-only Internet recovery and live server status
+
+1. Use a phone with mobile data disabled and normal Internet available only through a Wi-Fi access point. Connect the Bridge to a recorder, process a day so at least one file is queued, then press STOP/disconnect from the recorder. Confirm the phone reconnects to the normal Internet Wi-Fi and the queued upload starts automatically without closing/restarting SLM Bridge.
+2. Repeat several times, including a case where the normal Wi-Fi reconnect takes several seconds. Confirm the pending queue is re-evaluated within approximately 5 seconds and eventually starts once Android reports a validated Internet network.
+3. While a Drive upload is active, disable the phone's Internet path (for example turn off the normal Wi-Fi when mobile data is disabled). Confirm the upload returns to pending and `Server / Connected` changes to `Server / Off-line` when the transport failure is detected.
+4. Restore Internet without restarting the Bridge. Confirm the queued upload retries automatically, completes, and `Server / Connected` returns.
+5. Export diagnostics and confirm the sequence contains the applicable `src=NET event=INTERNET_UNAVAILABLE`, `SERVER_PATH_FAILED`, `INTERNET_AVAILABLE`, and `SERVER_PATH_RECOVERED` events.
+6. Repeat with cellular Internet available while connected to the recorder and confirm existing simultaneous recorder-Wi-Fi plus cellular-upload behavior is unchanged.
+
+
+## v0.3.50 — interrupted upload progress retention
+
+1. Start a server upload and wait until a clearly visible progress value is reached, for example 30–70%.
+2. Interrupt Internet access while the upload is active.
+3. Confirm the Server indicator changes to **Off-line** once the loss is detected.
+4. Confirm the transfer line keeps the last reached percentage and current queue position instead of displaying `File upload: none` / `Envoi fichier: aucun`.
+5. Confirm the progress bar remains visible and frozen at the same percentage while the file is pending.
+6. Restore Internet access. Confirm the retry starts automatically and the upload percentage restarts from 0%, then advances normally to completion.
+7. Confirm the file is uploaded only once successfully and the queue advances normally after completion.

@@ -12,6 +12,8 @@ import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -26,6 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 final class TransferManager {
     private static final long CREDENTIAL_IDLE_GRACE_MS = 120_000L;
+    private static final long PENDING_UPLOAD_RETRY_MS = 5_000L;
 
     interface QueueListener { void onQueueStatus(QueueStatus status); }
 
@@ -101,8 +104,16 @@ final class TransferManager {
     private final AtomicBoolean archiveScheduled = new AtomicBoolean();
     private final AtomicBoolean credentialPrefetchScheduled = new AtomicBoolean();
     private final AtomicBoolean credentialClearScheduled = new AtomicBoolean();
+    private final AtomicBoolean pendingUploadRetryScheduled = new AtomicBoolean();
     private volatile boolean uploadActive;
     private volatile int activeUploadPercent;
+    // Preserve the last visible progress when an upload attempt is interrupted.
+    // The retry restarts from 0%, but until then the UI should show where the
+    // failed attempt stopped instead of incorrectly displaying "none".
+    private volatile boolean uploadInterrupted;
+    private volatile int interruptedUploadPercent;
+    private volatile int interruptedUploadPosition;
+    private volatile int interruptedUploadTotal;
     // These counters remain on the serial upload executor. They keep a batch
     // labelled 1 of N, 2 of N, etc. even though completed items disappear
     // from TransferStore.pendingUploads().
@@ -110,6 +121,8 @@ final class TransferManager {
     private int uploadBatchCompleted;
     private int activeUploadPosition = 1;
     private int activeUploadTotal = 1;
+
+    private final Runnable pendingUploadRetryRunnable = this::onPendingUploadRetryTimer;
 
     private final Runnable credentialIdleClearRunnable = () -> {
         credentialClearScheduled.set(false);
@@ -216,6 +229,7 @@ final class TransferManager {
 
     void close() {
         main.removeCallbacksAndMessages(null);
+        pendingUploadRetryScheduled.set(false);
         downloadExecutor.shutdownNow();
         uploadExecutor.shutdownNow();
         preparationExecutor.shutdownNow();
@@ -468,6 +482,7 @@ final class TransferManager {
     }
 
     private void uploadOrQueue(TransferStore.Item item) {
+        Network uploadNetwork = null;
         try {
             // A network-change retry may already have completed this item
             // before its normal upload task reached the serial upload queue.
@@ -476,9 +491,11 @@ final class TransferManager {
                 publishQueueSnapshot(null);
                 return;
             }
-            if (networks.uploadNetwork() == null) {
+            uploadNetwork = networks.uploadNetwork();
+            if (uploadNetwork == null) {
                 emit(item, "upload-pending", 0, context.getString(R.string.waiting_for_internet));
                 publishQueueSnapshot(null);
+                schedulePendingUploadRetry();
                 return;
             }
 
@@ -502,6 +519,7 @@ final class TransferManager {
                 emit(item, "uploading", percent, null);
                 publishUploading(percent);
             });
+            networks.reportUploadSuccess(uploadNetwork);
             completeUploadBatchItem();
             emit(item, "upload-complete", 100, null);
             if (!item.archiveRequested) store.delete(item.id);
@@ -511,11 +529,14 @@ final class TransferManager {
             schedulePendingArchives();
             clearCredentialsWhenIdle();
         } catch (Exception e) {
+            rememberInterruptedUpload();
             clearActiveUpload();
+            if (isNetworkFailure(e)) networks.reportUploadFailure(uploadNetwork, e);
             IntegrityDiagnostics.failure(item == null ? "" : item.filename,
                     "drive-upload-or-verification", e);
             emit(item, "upload-pending", 0, message(e));
             publishQueueSnapshot(message(e));
+            schedulePendingUploadRetry();
         }
     }
 
@@ -525,6 +546,21 @@ final class TransferManager {
         cancelScheduledCredentialClear();
         retryRequested.set(true);
         scheduleUploadRetryWorker();
+        schedulePendingUploadRetry();
+    }
+
+    private void schedulePendingUploadRetry() {
+        if (!store.hasPendingUploads()) return;
+        if (!pendingUploadRetryScheduled.compareAndSet(false, true)) return;
+        main.postDelayed(pendingUploadRetryRunnable, PENDING_UPLOAD_RETRY_MS);
+    }
+
+    private void onPendingUploadRetryTimer() {
+        pendingUploadRetryScheduled.set(false);
+        if (!store.hasPendingUploads()) return;
+        // Re-evaluate NetworkCoordinator.uploadNetwork() even when Android did
+        // not deliver a useful callback after leaving the recorder Wi-Fi.
+        requestUploadRetry();
     }
 
     private void scheduleUploadRetryWorker() {
@@ -554,6 +590,7 @@ final class TransferManager {
         if (networks.uploadNetwork() == null) {
             emitPendingError(context.getString(R.string.waiting_for_internet));
             publishQueueSnapshot(null);
+            schedulePendingUploadRetry();
             return;
         }
 
@@ -571,8 +608,16 @@ final class TransferManager {
         }
 
         for (TransferStore.Item item : store.pendingUploads()) {
+            Network uploadNetwork = null;
             try {
                 if (item.uploaded) continue;
+                uploadNetwork = networks.uploadNetwork();
+                if (uploadNetwork == null) {
+                    emit(item, "upload-pending", 0, context.getString(R.string.waiting_for_internet));
+                    publishQueueSnapshot(null);
+                    schedulePendingUploadRetry();
+                    break;
+                }
                 cancelScheduledCredentialClear();
                 beginUploadBatchItem();
                 emit(item, "upload-started", 0, null);
@@ -581,16 +626,20 @@ final class TransferManager {
                     emit(item, "uploading", percent, null);
                     publishUploading(percent);
                 });
+                networks.reportUploadSuccess(uploadNetwork);
                 completeUploadBatchItem();
                 emit(item, "upload-complete", 100, null);
                 if (!item.archiveRequested) store.delete(item.id);
                 schedulePendingArchives();
             } catch (Exception e) {
+                rememberInterruptedUpload();
                 clearActiveUpload();
+                if (isNetworkFailure(e)) networks.reportUploadFailure(uploadNetwork, e);
                 IntegrityDiagnostics.failure(item.filename,
                         "drive-upload-or-verification", e);
                 emit(item, "upload-pending", 0, message(e));
                 publishQueueSnapshot(message(e));
+                schedulePendingUploadRetry();
                 break;
             }
         }
@@ -703,6 +752,7 @@ final class TransferManager {
 
     private void publishUploading(int percent) {
         int safePercent = Math.max(0, Math.min(100, percent));
+        uploadInterrupted = false;
         uploadActive = true;
         activeUploadPercent = safePercent;
         int dynamicTotal = Math.max(activeUploadTotal,
@@ -712,6 +762,14 @@ final class TransferManager {
                 + " of " + activeUploadTotal
                 + " — " + safePercent + "%", QueueStatus.UPLOADING,
                 activeUploadPosition, activeUploadTotal, safePercent));
+    }
+
+    private void rememberInterruptedUpload() {
+        if (!uploadActive) return;
+        uploadInterrupted = true;
+        interruptedUploadPercent = Math.max(0, Math.min(100, activeUploadPercent));
+        interruptedUploadPosition = Math.max(1, activeUploadPosition);
+        interruptedUploadTotal = Math.max(interruptedUploadPosition, activeUploadTotal);
     }
 
     private void clearActiveUpload() {
@@ -745,7 +803,18 @@ final class TransferManager {
             return;
         }
         if (count == 0) {
+            uploadInterrupted = false;
             publish(new QueueStatus("SERVER UPLOAD: Queue empty", QueueStatus.IDLE, 0, 0, 0));
+            return;
+        }
+        if (uploadInterrupted) {
+            int dynamicTotal = Math.max(interruptedUploadTotal,
+                    uploadBatchCompleted + Math.max(1, count));
+            interruptedUploadTotal = dynamicTotal;
+            publish(new QueueStatus("SERVER UPLOAD: Interrupted "
+                    + interruptedUploadPosition + " of " + dynamicTotal
+                    + " — " + interruptedUploadPercent + "%", QueueStatus.WAITING,
+                    interruptedUploadPosition, dynamicTotal, interruptedUploadPercent));
             return;
         }
         String files = count == 1 ? "file" : "files";
@@ -799,6 +868,15 @@ final class TransferManager {
         StringBuilder result = new StringBuilder(value.length * 2);
         for (byte part : value) result.append(String.format("%02x", part & 0xff));
         return result.toString();
+    }
+
+    private static boolean isNetworkFailure(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof IOException && !(current instanceof FileNotFoundException)) return true;
+            current = current.getCause();
+        }
+        return false;
     }
 
     private String message(Exception error) {
