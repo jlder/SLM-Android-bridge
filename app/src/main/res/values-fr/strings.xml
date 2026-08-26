@@ -6,6 +6,8 @@
     <string name="button_cancel">ANNULER</string>
     <string name="button_retry">RÉESSAYER</string>
     <string name="button_location_settings">PARAMÈTRES DE LOCALISATION</string>
+    <string name="button_update">METTRE À JOUR</string>
+    <string name="button_later">PLUS TARD</string>
 
     <string name="status_no_recorder">Aucun\nenregistreur</string>
     <string name="status_searching_recorder">Recherche\nEnregistreur</string>
@@ -16,6 +18,8 @@
     <string name="status_waiting_for_recorder">Attente\nEnregistreur</string>
     <string name="server_connected">Serveur\nConnecté</string>
     <string name="server_offline">Serveur\nHors ligne</string>
+    <string name="play_update_available_title">Mise à jour SLM BRIDGE disponible</string>
+    <string name="play_update_available_message">Une nouvelle version de SLM BRIDGE est disponible sur Google Play.</string>
     <string name="file_queue_empty">Envoi fichier: aucun&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;File d’attente: vide</string>
     <string name="file_queue_uploading">Envoi fichier: %1$d %%&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;File d’attente: %2$d/%3$d</string>
     <string name="file_queue_complete">Envoi fichier: aucun&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;File d’attente: %1$d/%1$d</string>
@@ -52,6 +56,8 @@
     <string name="recorder_disconnected_message">Connexion à l’enregistreur perdue. Vérifiez que son Wi-Fi est activé, puis appuyez sur CONNECTER.</string>
     <string name="recorder_not_ready_title">Enregistreur non prêt</string>
     <string name="recorder_not_ready_message">Attendez que l’enregistreur soit prêt.</string>
+    <string name="recorder_usb_power_required_title">Alimentation USB non connectée</string>
+    <string name="recorder_usb_power_required_message">L’enregistreur SLM doit être connecté à l’alimentation USB pour toutes les activités à l’exception de la calibration de l’enregistreur.\n\nVérifiez les connexions, les fusibles et l’alimentation du planeur (batterie).\n\nAppuyez sur OK pour continuer.</string>
 
     <string name="wifi_version_conflict_title">Conflit de version Wi-Fi</string>
     <string name="wifi_version_conflict_message">Des générations Wi-Fi SLM incompatibles ont été détectées.</string>

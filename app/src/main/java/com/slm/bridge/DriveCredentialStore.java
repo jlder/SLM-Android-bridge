@@ -19,10 +19,18 @@ final class DriveCredentialStore {
     private static final String KEY_ALIAS = "slm_drive_oauth_v1";
     private static final String VALUE = "encrypted_config";
     private static final String IV = "encrypted_config_iv";
+    private final Context context;
     private final SharedPreferences prefs;
 
     DriveCredentialStore(Context context) {
-        prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        this.context = context.getApplicationContext();
+        prefs = this.context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    synchronized void ensureBackgroundRefreshScheduled() {
+        if (!prefs.getString(VALUE, "").isEmpty() && !prefs.getString(IV, "").isEmpty()) {
+            ServerValidationJobService.schedule(context);
+        }
     }
 
     synchronized void save(DriveCredentials credentials) throws Exception {
@@ -35,6 +43,7 @@ final class DriveCredentialStore {
                 .commit()) {
             throw new IllegalStateException("Cannot save the Drive authorization");
         }
+        ServerValidationJobService.schedule(context);
     }
 
     synchronized DriveCredentials load() throws Exception {
@@ -55,6 +64,7 @@ final class DriveCredentialStore {
 
     synchronized void clear() {
         prefs.edit().remove(VALUE).remove(IV).commit();
+        ServerValidationJobService.cancel(context);
     }
 
     private SecretKey key() throws Exception {

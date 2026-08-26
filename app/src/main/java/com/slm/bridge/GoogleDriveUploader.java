@@ -9,12 +9,15 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.Locale;
 final class GoogleDriveUploader {
     private static final class DriveFileIntegrity {
@@ -28,6 +31,23 @@ final class GoogleDriveUploader {
             this.sha256 = sha256 == null ? "" : sha256.toLowerCase(Locale.US);
         }
     }
+
+    static final class ValidatedRecording {
+        final String registration;
+        final String filename;
+        final long size;
+        final String sha256;
+        final long serverCreatedAt;
+
+        ValidatedRecording(String registration, String filename, long size, String sha256,
+                           long serverCreatedAt) {
+            this.registration = registration == null ? "" : registration.trim().toUpperCase(Locale.US);
+            this.filename = filename == null ? "" : filename;
+            this.size = size;
+            this.sha256 = sha256 == null ? "" : sha256.trim().toLowerCase(Locale.US);
+            this.serverCreatedAt = serverCreatedAt;
+        }
+    }
     interface Progress { void update(int percent) throws Exception; }
     interface NetworkProvider { Network uploadNetwork(); }
 
@@ -38,18 +58,26 @@ final class GoogleDriveUploader {
     private static final int MAX_RESPONSE = 256 * 1024;
     private final NetworkProvider networks;
     private final TransferStore store;
+    private final ServerValidationCache validationCache;
     private final Map<String, String> registrationFolderCache = new HashMap<>();
     private final Map<String, String> childFolderCache = new HashMap<>();
     private String accessToken = "";
     private long accessTokenExpiry;
 
-    GoogleDriveUploader(NetworkCoordinator networks, TransferStore store) {
-        this(networks::uploadNetwork, store);
+    GoogleDriveUploader(NetworkCoordinator networks, TransferStore store,
+                        ServerValidationCache validationCache) {
+        this(networks::uploadNetwork, store, validationCache);
     }
 
     GoogleDriveUploader(NetworkProvider networks, TransferStore store) {
+        this(networks, store, null);
+    }
+
+    GoogleDriveUploader(NetworkProvider networks, TransferStore store,
+                        ServerValidationCache validationCache) {
         this.networks = networks;
         this.store = store;
+        this.validationCache = validationCache;
     }
 
     synchronized void clearAuthorization() {
@@ -79,6 +107,7 @@ final class GoogleDriveUploader {
             IntegrityDiagnostics.driveShaVerified(
                     item.filename, item.file.length(), item.sha256, true);
             store.markUploaded(item);
+            rememberValidationReceipt(item);
             progress.update(100);
             return;
         }
@@ -112,7 +141,141 @@ final class GoogleDriveUploader {
         IntegrityDiagnostics.driveShaVerified(
                 item.filename, item.file.length(), item.sha256, false);
         store.markUploaded(item);
+        rememberValidationReceipt(item);
         progress.update(100);
+    }
+
+    synchronized int refreshValidationCache(DriveCredentials credentials) throws Exception {
+        if (validationCache == null || credentials == null) return 0;
+        Network network = requireInternet();
+        String token = accessToken(network, credentials);
+        long refreshedAt = System.currentTimeMillis();
+        long cutoff = refreshedAt - ServerValidationCache.RETENTION_MS;
+        List<ValidatedRecording> recordings = listValidatedRecordings(
+                network, token, credentials, cutoff);
+        validationCache.replaceFromServer(recordings, refreshedAt);
+        IntegrityDiagnostics.bridgeEvent("SYNC", "VALIDATION_CACHE_REFRESHED",
+                "entries=" + recordings.size() + " retention_days=30");
+        return recordings.size();
+    }
+
+    private List<ValidatedRecording> listValidatedRecordings(Network network, String token,
+                                                              DriveCredentials credentials,
+                                                              long cutoff) throws Exception {
+        Map<String, String> registrationFolders = listRegistrationFolders(
+                network, token, credentials.rootFolderId);
+        List<ValidatedRecording> result = new ArrayList<>();
+        if (registrationFolders.isEmpty()) return result;
+
+        String cutoffText = Instant.ofEpochMilli(cutoff).toString();
+        String q = "trashed = false and createdTime >= '" + escapeQuery(cutoffText)
+                + "' and appProperties has { key='source' and value='slm-android' }";
+        String pageToken = "";
+        do {
+            String url = DRIVE_FILES
+                    + "?spaces=drive&pageSize=1000&orderBy=createdTime%20desc"
+                    + "&fields=nextPageToken,files(name,size,sha256Checksum,createdTime,parents,appProperties)"
+                    + "&q=" + query(q)
+                    + (pageToken.isEmpty() ? "" : "&pageToken=" + query(pageToken));
+            JSONObject response = authorizedJson(network, token, url, "GET", null,
+                    "Drive validation cache refresh");
+            JSONArray files = response.optJSONArray("files");
+            if (files != null) {
+                for (int i = 0; i < files.length(); i++) {
+                    JSONObject file = files.optJSONObject(i);
+                    if (file == null) continue;
+                    JSONObject properties = file.optJSONObject("appProperties");
+                    if (properties == null
+                            || !"recordings".equals(properties.optString("slmCollection"))) continue;
+
+                    String folderRegistration = parentRegistration(
+                            file.optJSONArray("parents"), registrationFolders);
+                    String propertyRegistration = properties.optString("slmRegistration")
+                            .trim().toUpperCase(Locale.US);
+                    if (folderRegistration.isEmpty()
+                            || !folderRegistration.equals(propertyRegistration)) continue;
+
+                    String filename = file.optString("name");
+                    if (!filename.toLowerCase(Locale.US).endsWith(".bin")) continue;
+                    long size = parseLong(file.optString("size"), -1L);
+                    String propertySha = properties.optString("sha256")
+                            .trim().toLowerCase(Locale.US);
+                    String driveSha = file.optString("sha256Checksum")
+                            .trim().toLowerCase(Locale.US);
+                    if (size < 0 || !propertySha.matches("[0-9a-f]{64}")
+                            || !propertySha.equals(driveSha)) continue;
+
+                    long createdAt;
+                    try {
+                        createdAt = Instant.parse(file.optString("createdTime")).toEpochMilli();
+                    } catch (Exception ignored) {
+                        continue;
+                    }
+                    if (createdAt < cutoff) continue;
+                    result.add(new ValidatedRecording(folderRegistration, filename, size,
+                            driveSha, createdAt));
+                }
+            }
+            pageToken = response.optString("nextPageToken");
+        } while (!pageToken.isEmpty());
+        return result;
+    }
+
+    private Map<String, String> listRegistrationFolders(Network network, String token,
+                                                         String rootFolderId) throws Exception {
+        Map<String, String> result = new HashMap<>();
+        String q = "'" + escapeQuery(rootFolderId)
+                + "' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
+        String pageToken = "";
+        do {
+            String url = DRIVE_FILES + "?spaces=drive&pageSize=1000"
+                    + "&fields=nextPageToken,files(id,name)&q=" + query(q)
+                    + (pageToken.isEmpty() ? "" : "&pageToken=" + query(pageToken));
+            JSONObject response = authorizedJson(network, token, url, "GET", null,
+                    "Drive validation folder lookup");
+            JSONArray files = response.optJSONArray("files");
+            if (files != null) {
+                for (int i = 0; i < files.length(); i++) {
+                    JSONObject folder = files.optJSONObject(i);
+                    if (folder == null) continue;
+                    String registration = folder.optString("name").trim().toUpperCase(Locale.US);
+                    if (!GliderRegistration.isValid(registration)) continue;
+                    String id = folder.optString("id");
+                    if (!id.isEmpty()) result.put(id, registration);
+                }
+            }
+            pageToken = response.optString("nextPageToken");
+        } while (!pageToken.isEmpty());
+        return result;
+    }
+
+    private static String parentRegistration(JSONArray parents, Map<String, String> folders) {
+        if (parents == null) return "";
+        for (int i = 0; i < parents.length(); i++) {
+            String registration = folders.get(parents.optString(i));
+            if (registration != null && !registration.isEmpty()) return registration;
+        }
+        return "";
+    }
+
+    private void rememberValidationReceipt(TransferStore.Item item) {
+        if (validationCache == null || item == null || !item.driveSubfolder.isEmpty()) return;
+        try {
+            validationCache.recordValidated(item.registration, item.filename, item.file.length(),
+                    item.sha256, System.currentTimeMillis());
+            IntegrityDiagnostics.bridgeEvent("SYNC", "VALIDATION_RECEIPT_RECORDED",
+                    "registration=" + item.registration + " file=" + item.filename);
+        } catch (Exception error) {
+            IntegrityDiagnostics.bridgeEvent("SYNC", "VALIDATION_RECEIPT_SAVE_FAILED",
+                    "registration=" + item.registration + " file=" + item.filename
+                            + " error=" + safe(error));
+        }
+    }
+
+    private static String safe(Exception error) {
+        String value = error == null ? "unknown"
+                : error.getClass().getSimpleName() + ":" + String.valueOf(error.getMessage());
+        return value.replace(' ', '_').replace('\n', '_').replace('\r', '_');
     }
 
     private String accessToken(Network network, DriveCredentials credentials) throws Exception {

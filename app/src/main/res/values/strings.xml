@@ -9,6 +9,8 @@
     <string name="button_cancel">CANCEL</string>
     <string name="button_retry">RETRY</string>
     <string name="button_location_settings">LOCATION SETTINGS</string>
+    <string name="button_update">UPDATE</string>
+    <string name="button_later">LATER</string>
 
     <string name="status_no_recorder">No\nRecorder</string>
     <string name="status_searching_recorder">Searching\nRecorder</string>
@@ -19,6 +21,8 @@
     <string name="status_waiting_for_recorder">Waiting\nfor recorder</string>
     <string name="server_connected">Server\nConnected</string>
     <string name="server_offline">Server\nOff-line</string>
+    <string name="play_update_available_title">SLM Bridge update available</string>
+    <string name="play_update_available_message">A new version of SLM Bridge is available on Google Play.</string>
     <string name="file_queue_empty">File upload: none&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;File queue: empty</string>
     <string name="file_queue_uploading">File upload: %1$d%%&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;File queue: %2$d/%3$d</string>
     <string name="file_queue_complete">File upload: none&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;File queue: %1$d/%1$d</string>
@@ -55,6 +59,8 @@
     <string name="recorder_disconnected_message">Recorder connection lost. Check that recorder Wi-Fi is on, then press Connect.</string>
     <string name="recorder_not_ready_title">Recorder not ready</string>
     <string name="recorder_not_ready_message">Wait until the recorder is ready.</string>
+    <string name="recorder_usb_power_required_title">USB power not connected</string>
+    <string name="recorder_usb_power_required_message">The SLM recorder should be connected to USB power for all activities except recorder calibration.\n\nVerify connections, fuses or glider power (battery).\n\nPress OK to continue.</string>
 
     <string name="wifi_version_conflict_title">Wi-Fi version conflict</string>
     <string name="wifi_version_conflict_message">Incompatible SLM Wi-Fi generations were found.</string>

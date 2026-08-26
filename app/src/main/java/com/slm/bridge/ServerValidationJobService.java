@@ -11,19 +11,22 @@ import android.net.Network;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Resumes durable Drive uploads after the foreground recorder UI has closed. */
-public final class UploadJobService extends JobService {
-    private static final int JOB_ID = 0x534C4D;
+/** Periodically refreshes the 30-day server validation receipt cache. */
+public final class ServerValidationJobService extends JobService {
+    private static final int JOB_ID = 0x534C52;
+    private static final long REFRESH_INTERVAL_MS = 6L * 60L * 60L * 1000L;
     private ExecutorService executor;
 
     static void schedule(Context context) {
+        JobScheduler scheduler = context.getSystemService(JobScheduler.class);
+        if (scheduler.getPendingJob(JOB_ID) != null) return;
         JobInfo job = new JobInfo.Builder(JOB_ID,
-                new ComponentName(context, UploadJobService.class))
+                new ComponentName(context, ServerValidationJobService.class))
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                 .setPersisted(true)
-                .setBackoffCriteria(30_000L, JobInfo.BACKOFF_POLICY_LINEAR)
+                .setPeriodic(REFRESH_INTERVAL_MS)
                 .build();
-        context.getSystemService(JobScheduler.class).schedule(job);
+        scheduler.schedule(job);
     }
 
     static void cancel(Context context) {
@@ -33,42 +36,27 @@ public final class UploadJobService extends JobService {
     @Override public boolean onStartJob(JobParameters parameters) {
         IntegrityDiagnostics.initialize(this);
         executor = Executors.newSingleThreadExecutor();
-        executor.execute(() -> runUploads(parameters));
+        executor.execute(() -> refresh(parameters));
         return true;
     }
 
-    private void runUploads(JobParameters parameters) {
+    private void refresh(JobParameters parameters) {
         boolean retry = false;
         try {
-            TransferStore store = new TransferStore(this);
-            if (!store.hasPendingUploads()) {
-                jobFinished(parameters, false);
-                return;
-            }
             DriveCredentials credentials = new DriveCredentialStore(this).load();
             Network network = parameters.getNetwork();
             if (credentials == null || network == null) {
-                jobFinished(parameters, credentials != null);
+                jobFinished(parameters, false);
                 return;
             }
-            ServerValidationCache validationCache = new ServerValidationCache(this);
-            GoogleDriveUploader uploader = new GoogleDriveUploader(() -> network, store, validationCache);
-            for (TransferStore.Item item : store.pendingUploads()) {
-                if (Thread.currentThread().isInterrupted()) {
-                    retry = true;
-                    break;
-                }
-                try {
-                    uploader.upload(item, credentials, percent -> {});
-                    if (!item.archiveRequested) store.delete(item.id);
-                } catch (Exception e) {
-                    retry = true;
-                    break;
-                }
-            }
-            if (store.hasPendingUploads()) retry = true;
-        } catch (Exception e) {
+            TransferStore store = new TransferStore(this);
+            ServerValidationCache cache = new ServerValidationCache(this);
+            GoogleDriveUploader uploader = new GoogleDriveUploader(() -> network, store, cache);
+            uploader.refreshValidationCache(credentials);
+        } catch (Exception error) {
             retry = true;
+            IntegrityDiagnostics.bridgeEvent("SYNC", "BACKGROUND_CACHE_REFRESH_FAILED",
+                    "error=" + safe(error));
         }
         jobFinished(parameters, retry);
     }
@@ -81,5 +69,11 @@ public final class UploadJobService extends JobService {
     @Override public void onDestroy() {
         if (executor != null) executor.shutdownNow();
         super.onDestroy();
+    }
+
+    private static String safe(Exception error) {
+        String value = error == null ? "unknown"
+                : error.getClass().getSimpleName() + ":" + String.valueOf(error.getMessage());
+        return value.replace(' ', '_').replace('\n', '_').replace('\r', '_');
     }
 }

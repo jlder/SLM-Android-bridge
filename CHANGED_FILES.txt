@@ -1,6 +1,15 @@
-SLM Bridge v0.3.49 -> v0.3.50
-- app/build.gradle: versionCode 50 -> 51; versionName 0.3.49 -> 0.3.50
-- app/src/main/java/com/slm/bridge/TransferManager.java: retain the last reached upload percentage and queue position after an interrupted upload while the item remains pending for retry
-- app/src/main/java/com/slm/bridge/MainActivity.java: display the retained interrupted percentage/progress bar for a waiting upload instead of `File upload: none` / `Envoi fichier: aucun`
-- README.md: document interrupted-upload progress retention and retry-from-0 behavior
-- VALIDATION.md: add focused v0.3.50 interruption/recovery validation
+SLM Bridge v0.3.55 secure WebView bridge (versionCode 57)
+
+Overwrite/add these files:
+- app/build.gradle
+- app/proguard-rules.pro
+- app/src/main/java/com/slm/bridge/MainActivity.java
+- app/src/main/java/com/slm/bridge/RecorderWebMessageBridge.java
+- app/src/main/java/com/slm/bridge/TransferManager.java
+- README.md
+- VALIDATION.md
+
+Delete this v0.3.54 file:
+- app/src/main/java/com/slm/bridge/RecorderJavascriptBridge.java
+
+The v0.3.54 USB warning string/resource changes are retained and unchanged.

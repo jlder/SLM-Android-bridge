@@ -11,6 +11,9 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 /** Archives a confirmed Drive-backed recording on the connected recorder. */
 final class RecorderArchiveClient {
@@ -20,6 +23,41 @@ final class RecorderArchiveClient {
     RecorderArchiveClient(NetworkCoordinator networks, AppSettings settings) {
         this.networks = networks;
         this.settings = settings;
+    }
+
+    List<String> listRootBinFiles() throws Exception {
+        Network network = networks.recorderNetwork();
+        if (network == null) throw new IllegalStateException("Recorder Wi-Fi is unavailable");
+        String endpoint = settings.recorderBaseUrl() + "/api/files";
+        if (!RecorderUrlPolicy.isAllowed(endpoint, settings.recorderBaseUrl())) {
+            throw new SecurityException("Recorder file-list endpoint is outside the recorder");
+        }
+        HttpURLConnection connection =
+                (HttpURLConnection) network.openConnection(new URL(endpoint));
+        connection.setConnectTimeout(10_000);
+        connection.setReadTimeout(10_000);
+        connection.setRequestProperty("Accept", "application/json");
+        try {
+            int status = connection.getResponseCode();
+            if (status / 100 != 2) {
+                throw new IllegalStateException("Recorder file list returned HTTP " + status);
+            }
+            JSONObject response = new JSONObject(readLimited(connection.getInputStream()));
+            JSONArray files = response.optJSONArray("files");
+            List<String> result = new ArrayList<>();
+            if (files == null) return result;
+            for (int i = 0; i < files.length(); i++) {
+                JSONObject entry = files.optJSONObject(i);
+                if (entry == null) continue;
+                String name = entry.optString("name");
+                if (name.isEmpty() || name.contains("/") || name.contains("\\")
+                        || !name.toLowerCase(Locale.US).endsWith(".bin")) continue;
+                result.add(name);
+            }
+            return result;
+        } finally {
+            connection.disconnect();
+        }
     }
 
     void archive(String filename) throws Exception {

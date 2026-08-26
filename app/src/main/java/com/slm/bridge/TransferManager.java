@@ -29,8 +29,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class TransferManager {
     private static final long CREDENTIAL_IDLE_GRACE_MS = 120_000L;
     private static final long PENDING_UPLOAD_RETRY_MS = 5_000L;
+    private static final long VALIDATION_REFRESH_MIN_INTERVAL_MS = 60_000L;
 
     interface QueueListener { void onQueueStatus(QueueStatus status); }
+    interface RecorderStateListener { void onRecorderTransferStates(String statesJson); }
 
     private static final class RecorderShaMetadata {
         final String filename;
@@ -88,8 +90,10 @@ final class TransferManager {
     private final DriveCredentialStore credentialStore;
     private final RecorderDriveCredentialsClient credentialClient;
     private final RecorderArchiveClient archiveClient;
+    private final ServerValidationCache validationCache;
     private final GoogleDriveUploader drive;
     private final QueueListener queueListener;
+    private volatile RecorderStateListener recorderStateListener;
     // Recorder downloads and cellular uploads have independent serial queues.
     // This keeps SD access single-file-at-a-time while allowing Drive uploads
     // to continue in the background during the next recorder download.
@@ -105,6 +109,9 @@ final class TransferManager {
     private final AtomicBoolean credentialPrefetchScheduled = new AtomicBoolean();
     private final AtomicBoolean credentialClearScheduled = new AtomicBoolean();
     private final AtomicBoolean pendingUploadRetryScheduled = new AtomicBoolean();
+    private final AtomicBoolean validationRefreshScheduled = new AtomicBoolean();
+    private final AtomicBoolean reconciliationScheduled = new AtomicBoolean();
+    private volatile long lastValidationRefreshAttemptAt;
     private volatile boolean uploadActive;
     private volatile int activeUploadPercent;
     // Preserve the last visible progress when an upload attempt is interrupted.
@@ -140,11 +147,18 @@ final class TransferManager {
         this.credentialStore = credentialStore;
         this.credentialClient = new RecorderDriveCredentialsClient(networks, settings);
         this.archiveClient = new RecorderArchiveClient(networks, settings);
-        this.drive = new GoogleDriveUploader(networks, store);
+        this.validationCache = new ServerValidationCache(context);
+        this.drive = new GoogleDriveUploader(networks, store, validationCache);
         this.queueListener = queueListener;
         UploadJobService.cancel(context);
         publishQueueSnapshot(null);
         requestUploadRetry();
+        scheduleValidationCacheRefresh();
+    }
+
+    void setRecorderStateListener(RecorderStateListener listener) {
+        recorderStateListener = listener;
+        notifyRecorderStateListener();
     }
 
     void enqueue(String requestJson) { downloadExecutor.execute(() -> execute(requestJson)); }
@@ -182,6 +196,7 @@ final class TransferManager {
         // the upload queue, then delete only after earlier uploads finish.
         downloadExecutor.execute(() -> uploadExecutor.execute(() -> {
                 store.delete(transferId);
+                notifyRecorderStateListener();
                 clearCredentialsWhenIdle();
             }));
     }
@@ -190,8 +205,15 @@ final class TransferManager {
         publishQueueSnapshot(null);
         schedulePendingArchives();
         prefetchCredentialsIfPossible();
+        scheduleValidationCacheRefresh();
         requestUploadRetry();
         clearCredentialsWhenIdle();
+    }
+
+    void onRecorderReady() {
+        schedulePendingArchives();
+        scheduleServerValidationReconciliation();
+        scheduleValidationCacheRefresh();
     }
 
     void markAnalysisComplete(String transferId) {
@@ -200,6 +222,7 @@ final class TransferManager {
                 TransferStore.Item item = store.get(transferId);
                 if (item == null) return;
                 store.markAnalysisComplete(item);
+                notifyRecorderStateListener();
                 // A newly analysed file has just joined the upload queue. If another
                 // file is already uploading, republish immediately so File queue
                 // expands from e.g. 1/1 to 1/2 or 1/3 without waiting for a later
@@ -216,6 +239,7 @@ final class TransferManager {
     void markAnalysisFailed(String transferId) {
         downloadExecutor.execute(() -> {
             store.delete(transferId);
+            notifyRecorderStateListener();
             publishQueueSnapshot(null);
             clearCredentialsWhenIdle();
         });
@@ -248,6 +272,7 @@ final class TransferManager {
                 throw new IllegalStateException(context.getString(R.string.recorder_registration_missing_ssid));
             }
             item = store.create(filename, registration, upload);
+            notifyRecorderStateListener();
             emit(item, "download-started", 0, null);
             RecorderShaMetadata expected = fetchRecorderShaMetadata(item.filename);
             DownloadResult downloaded = download(item);
@@ -264,10 +289,14 @@ final class TransferManager {
             IntegrityDiagnostics.recorderDownloadComplete(
                     item.filename, downloaded.size, downloaded.sha256, integrityStatus);
             store.markDownloaded(item, downloaded.sha256, integrityStatus);
+            notifyRecorderStateListener();
             emit(item, "download-complete", 100, null);
             publishQueueSnapshot(null);
         } catch (Exception e) {
-            if (item != null && !item.downloadComplete) store.delete(item.id);
+            if (item != null && !item.downloadComplete) {
+                store.delete(item.id);
+                notifyRecorderStateListener();
+            }
             IntegrityDiagnostics.failure(item == null ? "" : item.filename,
                     "recorder-download", e);
             emit(item, "failed", 0, message(e));
@@ -289,13 +318,18 @@ final class TransferManager {
             }
 
             item = store.createReport(filename, registration);
+            notifyRecorderStateListener();
             String sha256 = downloadReportWithRetry(item, request);
             store.markDownloaded(item, sha256, "generated-report");
+            notifyRecorderStateListener();
             publishQueueSnapshot(null);
             TransferStore.Item downloaded = item;
             uploadExecutor.execute(() -> uploadOrQueue(downloaded));
         } catch (Exception e) {
-            if (item != null && !item.downloadComplete) store.delete(item.id);
+            if (item != null && !item.downloadComplete) {
+                store.delete(item.id);
+                notifyRecorderStateListener();
+            }
             publishQueueSnapshot(message(e));
         }
     }
@@ -487,7 +521,10 @@ final class TransferManager {
             // A network-change retry may already have completed this item
             // before its normal upload task reached the serial upload queue.
             if (item.uploaded) {
-                if (!item.archiveRequested) store.delete(item.id);
+                if (!item.archiveRequested) {
+                    store.delete(item.id);
+                    notifyRecorderStateListener();
+                }
                 publishQueueSnapshot(null);
                 return;
             }
@@ -522,7 +559,12 @@ final class TransferManager {
             networks.reportUploadSuccess(uploadNetwork);
             completeUploadBatchItem();
             emit(item, "upload-complete", 100, null);
-            if (!item.archiveRequested) store.delete(item.id);
+            if (!item.archiveRequested) {
+                store.delete(item.id);
+                notifyRecorderStateListener();
+            } else {
+                notifyRecorderStateListener();
+            }
             clearActiveUpload();
             if (store.hasPendingUploads()) requestUploadRetry();
             else publishQueueSnapshot(null);
@@ -629,7 +671,12 @@ final class TransferManager {
                 networks.reportUploadSuccess(uploadNetwork);
                 completeUploadBatchItem();
                 emit(item, "upload-complete", 100, null);
-                if (!item.archiveRequested) store.delete(item.id);
+                if (!item.archiveRequested) {
+                    store.delete(item.id);
+                    notifyRecorderStateListener();
+                } else {
+                    notifyRecorderStateListener();
+                }
                 schedulePendingArchives();
             } catch (Exception e) {
                 rememberInterruptedUpload();
@@ -648,6 +695,82 @@ final class TransferManager {
         clearCredentialsWhenIdle();
     }
 
+
+    private void scheduleValidationCacheRefresh() {
+        if (networks.uploadNetwork() == null) return;
+        long now = System.currentTimeMillis();
+        long lastSuccess = validationCache.lastSuccessfulRefreshAt();
+        if (now - lastSuccess < VALIDATION_REFRESH_MIN_INTERVAL_MS
+                || now - lastValidationRefreshAttemptAt < VALIDATION_REFRESH_MIN_INTERVAL_MS) return;
+        if (!validationRefreshScheduled.compareAndSet(false, true)) return;
+        preparationExecutor.execute(() -> {
+            Network uploadNetwork = networks.uploadNetwork();
+            try {
+                if (uploadNetwork == null) return;
+                DriveCredentials credentials = availableCredentials();
+                if (credentials == null) return;
+                long attemptAt = System.currentTimeMillis();
+                if (attemptAt - lastValidationRefreshAttemptAt
+                        < VALIDATION_REFRESH_MIN_INTERVAL_MS) return;
+                lastValidationRefreshAttemptAt = attemptAt;
+                drive.refreshValidationCache(credentials);
+                networks.reportUploadSuccess(uploadNetwork);
+                scheduleServerValidationReconciliation();
+            } catch (Exception error) {
+                if (isNetworkFailure(error)) networks.reportUploadFailure(uploadNetwork, error);
+                IntegrityDiagnostics.bridgeEvent("SYNC", "VALIDATION_CACHE_REFRESH_FAILED",
+                        "error=" + diagnostic(error));
+            } finally {
+                validationRefreshScheduled.set(false);
+            }
+        });
+    }
+
+    private void scheduleServerValidationReconciliation() {
+        if (networks.recorderNetwork() == null) return;
+        if (!reconciliationScheduled.compareAndSet(false, true)) return;
+        downloadExecutor.execute(() -> {
+            try {
+                validationCache.reloadFromDisk();
+                if (validationCache.size() > 0) reconcileRecorderAgainstValidationCache();
+            } finally {
+                reconciliationScheduled.set(false);
+            }
+        });
+    }
+
+    private void reconcileRecorderAgainstValidationCache() {
+        Network connectedNetwork = networks.recorderNetwork();
+        if (connectedNetwork == null) return;
+        String registration = settings.gliderRegistration();
+        if (registration.isEmpty()) return;
+
+        try {
+            for (String filename : archiveClient.listRootBinFiles()) {
+                if (networks.recorderNetwork() != connectedNetwork) return;
+                // Existing local queue state remains authoritative for work being
+                // handled by this phone. Cross-phone reconciliation is for files
+                // for which this Bridge has no active transfer.
+                if (store.hasActiveRecording(registration, filename)) continue;
+
+                RecorderShaMetadata metadata = fetchRecorderShaMetadata(filename);
+                if (metadata == null) continue; // Legacy recordings have no portable proof.
+                if (!validationCache.contains(registration, metadata.filename,
+                        metadata.size, metadata.sha256)) continue;
+
+                IntegrityDiagnostics.bridgeEvent("SYNC", "VALIDATION_RECEIPT_MATCH",
+                        "registration=" + registration + " file=" + filename
+                                + " size=" + metadata.size + " sha256=" + metadata.sha256);
+                archiveClient.archive(filename);
+                IntegrityDiagnostics.bridgeEvent("SYNC", "RECONCILED_ARCHIVE_COMPLETE",
+                        "registration=" + registration + " file=" + filename
+                                + " size=" + metadata.size + " sha256=" + metadata.sha256);
+            }
+        } catch (Exception error) {
+            IntegrityDiagnostics.bridgeEvent("SYNC", "RECONCILIATION_FAILED",
+                    "registration=" + registration + " error=" + diagnostic(error));
+        }
+    }
 
     private void schedulePendingArchives() {
         if (networks.recorderNetwork() == null || store.pendingArchives().isEmpty()
@@ -674,10 +797,12 @@ final class TransferManager {
             try {
                 archiveClient.archive(item.filename);
                 store.markArchived(item);
+                notifyRecorderStateListener();
                 IntegrityDiagnostics.recorderArchiveComplete(
                         item.filename, item.file.length(), item.sha256, item.integrityStatus);
                 emit(item, "archive-complete", 100, null);
                 store.delete(item.id);
+                notifyRecorderStateListener();
             } catch (Exception e) {
                 IntegrityDiagnostics.failure(item.filename, "recorder-archive", e);
                 emit(item, "archive-pending", 0, message(e));
@@ -735,8 +860,10 @@ final class TransferManager {
         if (store.hasPendingUploads() || uploadActive) return;
         uploadBatchTotal = 0;
         uploadBatchCompleted = 0;
+        // Clear short-lived access tokens/folder caches, but retain the encrypted
+        // refresh authorization so this Bridge can refresh the 30-day validation
+        // receipt cache later when Internet is available without the recorder.
         drive.clearAuthorization();
-        if (networks.recorderNetwork() == null) credentialStore.clear();
         UploadJobService.cancel(context);
     }
 
@@ -835,6 +962,16 @@ final class TransferManager {
         if (queueListener != null) queueListener.onQueueStatus(status);
     }
 
+    private void notifyRecorderStateListener() {
+        RecorderStateListener listener = recorderStateListener;
+        if (listener == null) return;
+        String states = recorderTransferStates();
+        main.post(() -> {
+            RecorderStateListener current = recorderStateListener;
+            if (current != null) current.onRecorderTransferStates(states);
+        });
+    }
+
     private void emit(TransferStore.Item item, String state, int percent, String error) {
         // Calibration reports use the native queue-status line and must not
         // drive the recorder binary-analysis window in the Web application.
@@ -877,6 +1014,12 @@ final class TransferManager {
             current = current.getCause();
         }
         return false;
+    }
+
+    private static String diagnostic(Exception error) {
+        String value = error == null ? "unknown"
+                : error.getClass().getSimpleName() + ":" + String.valueOf(error.getMessage());
+        return value.replace(' ', '_').replace('\n', '_').replace('\r', '_');
     }
 
     private String message(Exception error) {

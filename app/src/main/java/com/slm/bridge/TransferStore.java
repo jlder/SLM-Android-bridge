@@ -145,6 +145,14 @@ final class TransferStore {
 
     synchronized boolean hasPendingUploads() { return !pendingUploads().isEmpty(); }
 
+    synchronized boolean hasActiveRecording(String registration, String filename) {
+        for (Item item : items.values()) {
+            if (!item.driveSubfolder.isEmpty() || item.archived) continue;
+            if (item.registration.equals(registration) && item.filename.equals(filename)) return true;
+        }
+        return false;
+    }
+
     synchronized List<Item> pendingArchives() {
         List<Item> result = new ArrayList<>();
         for (Item item : items.values()) {

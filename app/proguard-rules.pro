@@ -1,3 +1,1 @@
--keepclassmembers class com.slm.bridge.RecorderJavascriptBridge {
-    @android.webkit.JavascriptInterface <methods>;
-}
+# No custom ProGuard/R8 rules are required.

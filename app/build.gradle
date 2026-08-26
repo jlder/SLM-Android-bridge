@@ -13,8 +13,8 @@ android {
         applicationId 'com.derouineau.slmbridge'
         minSdk 29
         targetSdk 36
-        versionCode 51
-        versionName '0.3.50'
+        versionCode 57
+        versionName '0.3.55'
     }
 
     buildTypes {
@@ -23,4 +23,10 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
+}
+
+
+dependencies {
+    implementation 'com.google.android.play:app-update:2.1.0'
+    implementation 'androidx.webkit:webkit:1.17.0'
 }

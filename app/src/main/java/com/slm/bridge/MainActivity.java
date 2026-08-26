@@ -42,8 +42,11 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -52,12 +55,26 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Collections;
+import java.util.Set;
+
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+
+import com.google.android.play.core.appupdate.AppUpdateInfo;
+import com.google.android.play.core.appupdate.AppUpdateManager;
+import com.google.android.play.core.appupdate.AppUpdateManagerFactory;
+import com.google.android.play.core.install.model.UpdateAvailability;
+
+import org.json.JSONObject;
+
 
 public final class MainActivity extends Activity implements NetworkCoordinator.Listener {
     private static final int PERMISSION_REQUEST = 41;
     private static final int CREATE_DOCUMENT_REQUEST = 42;
     private static final int OPEN_DOCUMENT_REQUEST = 43;
     private static final String LOG_TAG = "SLM-Web";
+    private static final String RECORDER_NATIVE_MESSAGE_OBJECT = "SLMNative";
     private static final int COLOR_BLUE = Color.rgb(34, 85, 170);
     private static final int COLOR_GREY = Color.rgb(145, 145, 145);
     private static final int COLOR_GREEN = Color.rgb(142, 214, 82);
@@ -76,6 +93,12 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private NetworkCoordinator networks;
     private TransferManager transfers;
     private FirmwareManager firmwareManager;
+    private RecorderWebMessageBridge recorderWebMessageBridge;
+    private boolean recorderWebMessageBridgeConfigured;
+    private AppUpdateManager playUpdateManager;
+    private boolean playUpdateCheckInFlight;
+    private boolean playUpdateCheckComplete;
+    private boolean playUpdateDialogShowing;
     private OtaActivityTracker otaActivity;
     private RecorderFileExporter fileExporter;
     private RecorderFileExporter.Request pendingDownload;
@@ -95,8 +118,12 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private boolean debugBuild;
     private long recorderScanStartedMs;
     private int recorderHealthFailures;
+    private volatile boolean activityForeground;
+    private boolean recorderHealthSuspendedForBackground;
     private volatile Network recorderProbeNetwork;
     private volatile boolean recorderReady;
+    private volatile boolean recorderUsbPresentValid;
+    private volatile boolean recorderUsbPresent;
     private volatile boolean recorderUpdateOnlyMode;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicInteger recorderScanGeneration = new AtomicInteger();
@@ -142,10 +169,12 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         connectButton = findViewById(R.id.connectButton);
         recorderStatusText = getString(R.string.status_no_recorder);
         networks = new NetworkCoordinator(this, this);
+        playUpdateManager = AppUpdateManagerFactory.create(this);
         otaActivity = new OtaActivityTracker();
         fileExporter = new RecorderFileExporter(this, networks, settings, this::onExportFinished);
         TransferStore store = new TransferStore(this);
         DriveCredentialStore driveCredentialStore = new DriveCredentialStore(this);
+        driveCredentialStore.ensureBackgroundRefreshScheduled();
         transfers = new TransferManager(networks, settings, store,
                 driveCredentialStore, webView,
                 status -> runOnUiThread(() -> updateServerQueueUi(status)));
@@ -157,10 +186,37 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         });
         bridgeTitle.setOnClickListener(v -> onBridgeTitleTapped());
         updateConnectionUi(networks.recorderNetwork(), networks.uploadNetwork());
+        maybeCheckPlayStoreUpdate();
+    }
+
+    @Override protected void onStart() {
+        super.onStart();
+        activityForeground = true;
+        Network healthNetwork = recorderProbeNetwork;
+        boolean resumeHealth = recorderHealthSuspendedForBackground
+                && recorderReady
+                && healthNetwork != null
+                && healthNetwork.equals(networks.recorderNetwork());
+        if (recorderHealthSuspendedForBackground) {
+            recorderHealthSuspendedForBackground = false;
+            recorderHealthFailures = 0;
+            IntegrityDiagnostics.bridgeEvent("HTTP", "HEALTH_MONITOR_RESUMED",
+                    "reason=APP_FOREGROUND");
+        }
+        if (resumeHealth) startRecorderHealthMonitor(healthNetwork);
+    }
+
+    @Override protected void onStop() {
+        activityForeground = false;
+        if (recorderReady && recorderProbeNetwork != null) {
+            suspendRecorderHealthForBackground();
+        }
+        super.onStop();
     }
 
     @Override protected void onResume() {
         super.onResume();
+        maybeCheckPlayStoreUpdate();
         if (!resumeRecorderConnectAfterLocationSettings) return;
 
         resumeRecorderConnectAfterLocationSettings = false;
@@ -179,6 +235,17 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         } catch (PackageManager.NameNotFoundException error) {
             Log.w(LOG_TAG, "Unable to read installed Bridge version", error);
             return "unknown";
+        }
+    }
+
+    private long installedVersionCode() {
+        try {
+            return getPackageManager()
+                    .getPackageInfo(getPackageName(), 0)
+                    .getLongVersionCode();
+        } catch (PackageManager.NameNotFoundException error) {
+            Log.w(LOG_TAG, "Unable to read installed Bridge version code", error);
+            return -1L;
         }
     }
 
@@ -300,8 +367,75 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 store, settings, debugBuild, () -> recorderUpdateOnlyMode));
         webView.setWebChromeClient(createRecorderWebChromeClient());
         webView.setDownloadListener(this::onDownloadRequested);
-        webView.addJavascriptInterface(new RecorderJavascriptBridge(
-                transfers, networks, firmwareManager, otaActivity), "SLMAndroid");
+        configureRecorderWebMessageBridge(transfers, firmwareManager);
+    }
+
+    private void configureRecorderWebMessageBridge(TransferManager transfers,
+                                                   FirmwareManager firmwareManager) {
+        recorderWebMessageBridge = new RecorderWebMessageBridge(
+                transfers, networks, firmwareManager, otaActivity);
+
+        boolean listenerSupported = WebViewFeature.isFeatureSupported(
+                WebViewFeature.WEB_MESSAGE_LISTENER);
+        boolean documentStartSupported = WebViewFeature.isFeatureSupported(
+                WebViewFeature.DOCUMENT_START_SCRIPT);
+        if (!listenerSupported || !documentStartSupported) {
+            IntegrityDiagnostics.bridgeEvent("WEB", "SECURE_JS_BRIDGE_UNAVAILABLE",
+                    "web_message_listener=" + listenerSupported
+                            + " document_start_script=" + documentStartSupported);
+            Log.e(LOG_TAG, "Secure recorder JavaScript bridge unavailable; "
+                    + "Android System WebView must be updated");
+            return;
+        }
+
+        String allowedOrigin = RecorderUrlPolicy.origin(settings.recorderBaseUrl());
+        Set<String> allowedOrigins = Collections.singleton(allowedOrigin);
+        WebViewCompat.addWebMessageListener(webView, RECORDER_NATIVE_MESSAGE_OBJECT,
+                allowedOrigins, (view, message, sourceOrigin, isMainFrame, replyProxy) -> {
+                    if (!isMainFrame
+                            || sourceOrigin == null
+                            || !RecorderUrlPolicy.isAllowed(
+                                    sourceOrigin.toString(), settings.recorderBaseUrl())) {
+                        if (debugBuild) {
+                            Log.w(LOG_TAG, "Blocked recorder bridge message from "
+                                    + sourceOrigin + " mainFrame=" + isMainFrame);
+                        }
+                        return;
+                    }
+                    String messageData = message.getData();
+                    if (messageData == null) {
+                        if (debugBuild) Log.w(LOG_TAG, "Blocked non-string recorder bridge message");
+                        return;
+                    }
+                    try {
+                        String response = recorderWebMessageBridge.handleMessage(messageData);
+                        if (response != null) replyProxy.postMessage(response);
+                    } catch (Exception error) {
+                        IntegrityDiagnostics.bridgeEvent("WEB", "JS_BRIDGE_REQUEST_REJECTED",
+                                "error=" + error.getClass().getSimpleName());
+                        if (debugBuild) Log.w(LOG_TAG, "Recorder bridge request rejected", error);
+                    }
+                });
+        WebViewCompat.addDocumentStartJavaScript(webView,
+                recorderWebMessageBridge.compatibilityScript(), allowedOrigins);
+        recorderWebMessageBridgeConfigured = true;
+        transfers.setRecorderStateListener(this::pushRecorderTransferStates);
+        IntegrityDiagnostics.bridgeEvent("WEB", "SECURE_JS_BRIDGE_READY",
+                "origin=" + allowedOrigin);
+    }
+
+    private void pushRecorderTransferStates(String statesJson) {
+        if (!recorderWebMessageBridgeConfigured || statesJson == null) return;
+        mainHandler.post(() -> {
+            if (webView == null
+                    || !RecorderUrlPolicy.isAllowed(webView.getUrl(), settings.recorderBaseUrl())) {
+                return;
+            }
+            String script = "if(window.__slmAndroidSetTransferStates)"
+                    + "window.__slmAndroidSetTransferStates("
+                    + JSONObject.quote(statesJson) + ");";
+            webView.evaluateJavascript(script, null);
+        });
     }
 
     private WebChromeClient createRecorderWebChromeClient() {
@@ -803,9 +937,13 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 }
                 recorderProbeNetwork = null;
                 recorderReady = false;
+                recorderUsbPresentValid = false;
+                recorderUsbPresent = false;
             } else if (!recorder.equals(recorderProbeNetwork)) {
                 recorderProbeNetwork = recorder;
                 recorderReady = false;
+                recorderUsbPresentValid = false;
+                recorderUsbPresent = false;
                 stopRecorderHealthMonitor();
                 IntegrityDiagnostics.bridgeEvent("NET", "RECORDER_NETWORK_AVAILABLE",
                         "ssid=" + settings.recorderSsid()
@@ -813,7 +951,10 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                 beginProbe = true;
             }
         }
-        runOnUiThread(() -> updateConnectionUi(recorder, internet));
+        runOnUiThread(() -> {
+            updateConnectionUi(recorder, internet);
+            maybeCheckPlayStoreUpdate();
+        });
         if (beginProbe) startRecorderProbe(recorder);
     }
 
@@ -841,11 +982,22 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                         + " vpn_active=" + networks.isVpnActive());
         recorderProbeExecutor.execute(() -> {
             boolean answered = false;
-            for (int attempt = 0; attempt < 40 && generation == recorderProbeGeneration.get(); attempt++) {
-                answered = probeRecorder(network);
+            final boolean vpnFastFail = networks.isVpnActive();
+            final int maxAttempts = vpnFastFail ? 4 : 40;
+            final int probeTimeoutMs = vpnFastFail ? 1_000 : 1_500;
+            final long retryDelayMs = vpnFastFail ? 500L : 750L;
+            IntegrityDiagnostics.bridgeEvent("HTTP", "RECORDER_PROBE_POLICY",
+                    "vpn_fast_fail=" + vpnFastFail
+                            + " attempts=" + maxAttempts
+                            + " timeout_ms=" + probeTimeoutMs
+                            + " retry_ms=" + retryDelayMs);
+            for (int attempt = 0; attempt < maxAttempts
+                    && generation == recorderProbeGeneration.get(); attempt++) {
+                answered = probeRecorder(network, probeTimeoutMs);
                 if (answered) break;
+                if (attempt + 1 >= maxAttempts) break;
                 try {
-                    Thread.sleep(750);
+                    Thread.sleep(retryDelayMs);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     return;
@@ -865,6 +1017,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                                     + " vpn_active=" + networks.isVpnActive());
                     startRecorderHealthMonitor(network);
                     updateConnectionUi(network, networks.uploadNetwork());
+                    if (!recorderUpdateOnlyMode && transfers != null) transfers.onRecorderReady();
                     launchInterface();
                     if (recorderUpdateOnlyMode) {
                         showMessageDialog(getString(R.string.recorder_update_required_title),
@@ -882,27 +1035,59 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                             getString(vpnActive
                                     ? R.string.recorder_not_responding_vpn_message
                                     : R.string.recorder_not_responding_message));
-                    networks.disconnectRecorder();
+                            networks.disconnectRecorder();
                 }
             });
         });
     }
 
     private boolean probeRecorder(Network network) {
+        return probeRecorder(network, 1_500);
+    }
+
+    private boolean probeRecorder(Network network, int timeoutMs) {
         HttpURLConnection connection = null;
         try {
             URL statusUrl = new URL(settings.recorderBaseUrl() + "/api/status");
             connection = (HttpURLConnection) network.openConnection(statusUrl);
-            connection.setConnectTimeout(1500);
-            connection.setReadTimeout(1500);
+            connection.setConnectTimeout(timeoutMs);
+            connection.setReadTimeout(timeoutMs);
             connection.setUseCaches(false);
             connection.setRequestMethod("GET");
             int status = connection.getResponseCode();
-            return status >= 200 && status < 300;
+            if (status < 200 || status >= 300) return false;
+
+            // Current recorder firmware publishes USB power state in /api/status.
+            // Keep recorder reachability independent from this optional metadata so
+            // older recorder firmware remains compatible with update-only mode.
+            try {
+                JSONObject body = new JSONObject(readRecorderStatusBody(connection.getInputStream()));
+                boolean usbValid = body.optBoolean("usb_present_valid", false);
+                recorderUsbPresentValid = usbValid;
+                recorderUsbPresent = usbValid && body.optBoolean("usb_present", false);
+            } catch (Exception ignored) {
+                recorderUsbPresentValid = false;
+                recorderUsbPresent = false;
+            }
+            return true;
         } catch (Exception ignored) {
             return false;
         } finally {
             if (connection != null) connection.disconnect();
+        }
+    }
+
+    private static String readRecorderStatusBody(InputStream in) throws Exception {
+        try (InputStream source = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[512];
+            int count;
+            while ((count = source.read(buffer)) >= 0) {
+                if (out.size() + count > 4096) {
+                    throw new IllegalStateException("Recorder status response is too large");
+                }
+                out.write(buffer, 0, count);
+            }
+            return out.toString(StandardCharsets.UTF_8.name());
         }
     }
 
@@ -915,6 +1100,7 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
     private void stopRecorderHealthMonitor() {
         recorderHealthGeneration.incrementAndGet();
         recorderHealthFailures = 0;
+        recorderHealthSuspendedForBackground = false;
     }
 
     private void scheduleRecorderHealthCheck(int generation, Network network) {
@@ -922,6 +1108,10 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             if (generation != recorderHealthGeneration.get()
                     || !recorderReady
                     || !network.equals(networks.recorderNetwork())) return;
+            if (!activityForeground) {
+                suspendRecorderHealthForBackground();
+                return;
+            }
             if (otaActivity != null && otaActivity.isProtected()) {
                 scheduleRecorderHealthCheck(generation, network);
                 return;
@@ -937,6 +1127,10 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         if (generation != recorderHealthGeneration.get()
                 || !recorderReady
                 || !network.equals(networks.recorderNetwork())) return;
+        if (!activityForeground) {
+            suspendRecorderHealthForBackground();
+            return;
+        }
         if (answered) {
             recorderHealthFailures = 0;
             scheduleRecorderHealthCheck(generation, network);
@@ -954,6 +1148,8 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             scheduleRecorderHealthCheck(generation, network);
             return;
         }
+        IntegrityDiagnostics.bridgeEvent("HTTP", "HEALTH_DISCONNECT",
+                "failures=" + recorderHealthFailures + " action=disconnect_recorder");
         recorderReady = false;
         recorderConnectionRequested = false;
         showDisconnectedRecorder = true;
@@ -965,11 +1161,23 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
         updateConnectionUi(null, networks.uploadNetwork());
     }
 
+    private void suspendRecorderHealthForBackground() {
+        recorderHealthFailures = 0;
+        if (recorderHealthSuspendedForBackground) return;
+        recorderHealthSuspendedForBackground = true;
+        recorderHealthGeneration.incrementAndGet();
+        IntegrityDiagnostics.bridgeEvent("HTTP", "HEALTH_MONITOR_SUSPENDED",
+                "reason=APP_BACKGROUND");
+    }
+
+
     private void resetRecorderProbe() {
         recorderProbeGeneration.incrementAndGet();
         stopRecorderHealthMonitor();
         recorderProbeNetwork = null;
         recorderReady = false;
+        recorderUsbPresentValid = false;
+        recorderUsbPresent = false;
     }
 
     private void resetRecorderCompatibilityMode() {
@@ -986,6 +1194,82 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             setRecorderStatus(null, false, false);
             showMessageDialog(getString(R.string.wifi_permission_required_title),
                     getString(R.string.wifi_connect_permission_message));
+        }
+    }
+
+    private void maybeCheckPlayStoreUpdate() {
+        if (playUpdateManager == null || playUpdateCheckComplete || playUpdateCheckInFlight) return;
+        if (networks == null || networks.recorderNetwork() != null) return;
+
+        Network internet = networks.uploadNetwork();
+        if (internet == null || !networks.serverReachable(internet)) return;
+
+        playUpdateCheckInFlight = true;
+        IntegrityDiagnostics.bridgeEvent("PLAY", "UPDATE_CHECK_START",
+                "installed_version=" + installedVersionName()
+                        + " installed_code=" + installedVersionCode());
+        playUpdateManager.getAppUpdateInfo()
+                .addOnSuccessListener(info -> runOnUiThread(() -> onPlayUpdateInfo(info)))
+                .addOnFailureListener(error -> runOnUiThread(() -> {
+                    playUpdateCheckInFlight = false;
+                    String detail = error == null ? "unknown"
+                            : error.getClass().getSimpleName() + ":"
+                            + String.valueOf(error.getMessage()).replace('\n', ' ').replace('\r', ' ');
+                    IntegrityDiagnostics.bridgeEvent("PLAY", "UPDATE_CHECK_FAILED",
+                            "error=" + detail);
+                }));
+    }
+
+    private void onPlayUpdateInfo(AppUpdateInfo info) {
+        playUpdateCheckInFlight = false;
+        playUpdateCheckComplete = true;
+        if (info == null) return;
+
+        int availability = info.updateAvailability();
+        int availableCode = availability == UpdateAvailability.UPDATE_AVAILABLE
+                ? info.availableVersionCode() : -1;
+        IntegrityDiagnostics.bridgeEvent("PLAY", "UPDATE_CHECK_RESULT",
+                "availability=" + availability
+                        + " available_code=" + availableCode);
+
+        if (availability != UpdateAvailability.UPDATE_AVAILABLE
+                || availableCode <= installedVersionCode()) {
+            return;
+        }
+        showPlayStoreUpdateDialog();
+    }
+
+    private void showPlayStoreUpdateDialog() {
+        if (playUpdateDialogShowing || isFinishing() || isDestroyed()) return;
+        playUpdateDialogShowing = true;
+        new AlertDialog.Builder(this)
+                .setTitle(getString(R.string.play_update_available_title))
+                .setMessage(getString(R.string.play_update_available_message))
+                .setPositiveButton(getString(R.string.button_update),
+                        (dialog, which) -> openPlayStorePage())
+                .setNegativeButton(getString(R.string.button_later), null)
+                .setOnDismissListener(dialog -> playUpdateDialogShowing = false)
+                .show();
+    }
+
+    private void openPlayStorePage() {
+        String packageName = getPackageName();
+        Intent marketIntent = new Intent(Intent.ACTION_VIEW,
+                Uri.parse("market://details?id=" + packageName));
+        marketIntent.setPackage("com.android.vending");
+        try {
+            startActivity(marketIntent);
+            return;
+        } catch (ActivityNotFoundException ignored) {
+            // Fall back to the Web Play Store when the Play Store app is unavailable.
+        }
+
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(
+                    "https://play.google.com/store/apps/details?id=" + packageName)));
+        } catch (ActivityNotFoundException error) {
+            IntegrityDiagnostics.bridgeEvent("PLAY", "UPDATE_OPEN_FAILED",
+                    "error=" + error.getClass().getSimpleName());
         }
     }
 
@@ -1129,7 +1413,27 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
                     getString(R.string.recorder_not_ready_message));
             return;
         }
+        if (recorderUsbPresentValid && !recorderUsbPresent) {
+            showUsbPowerWarningBeforeInterface();
+            return;
+        }
         webView.loadUrl(settings.recorderBaseUrl());
+    }
+
+    private void showUsbPowerWarningBeforeInterface() {
+        if (isFinishing() || isDestroyed()) return;
+        IntegrityDiagnostics.bridgeEvent("POWER", "RECORDER_USB_WARNING_SHOWN",
+                "usb_present=false action=await_acknowledgement");
+        new AlertDialog.Builder(this)
+                .setTitle(getString(R.string.recorder_usb_power_required_title))
+                .setMessage(getString(R.string.recorder_usb_power_required_message))
+                .setCancelable(false)
+                .setPositiveButton(getString(R.string.button_ok), (dialog, which) -> {
+                    IntegrityDiagnostics.bridgeEvent("POWER", "RECORDER_USB_WARNING_ACKNOWLEDGED",
+                            "action=open_recorder_interface");
+                    webView.loadUrl(settings.recorderBaseUrl());
+                })
+                .show();
     }
 
     private boolean isSystemLocationEnabled() {
@@ -1209,7 +1513,10 @@ public final class MainActivity extends Activity implements NetworkCoordinator.L
             pendingFileChooser.onReceiveValue(null);
             pendingFileChooser = null;
         }
-        webView.removeJavascriptInterface("SLMAndroid");
+        if (recorderWebMessageBridgeConfigured
+                && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            WebViewCompat.removeWebMessageListener(webView, RECORDER_NATIVE_MESSAGE_OBJECT);
+        }
         webView.destroy();
         super.onDestroy();
     }
